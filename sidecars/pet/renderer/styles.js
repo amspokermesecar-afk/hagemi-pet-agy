@@ -76,10 +76,17 @@ HAGEMI.css = `
 .update-version { margin-left: auto; font-size: 10px; color: #786493; }
 .update-status { margin: 5px 0 8px; }
 .update-reason { margin-bottom: 8px; font-size: 11px; }
+.update-meta { margin-bottom: 7px; font-size: 11px; color: #5b4b82; }
+.update-risk { margin-bottom: 7px; padding: 5px 7px; border-radius: 8px; font-size: 11px; line-height: 1.4; }
+.update-risk[data-level="high"] { background: #fff1f2; border: 1px solid #fda4af; color: #9f1239; }
+.update-risk[data-level="low"] { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+.update-links { margin-bottom: 8px; font-size: 11px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .update-button { width: 100%; border: 1px solid #bba0ec; border-radius: 16px; padding: 7px 10px; background: #ede0ff; color: #58308e; font: inherit; font-weight: 700; cursor: pointer; }
 .update-button:hover:not(:disabled) { background: #e3cefc; }
 .update-button:focus-visible { outline: 2px solid #8b5cf6; outline-offset: 2px; }
 .update-button:disabled { cursor: default; opacity: .7; }
+.update-rollback { width: 100%; margin-top: 6px; border: 1px solid #d9cffb; border-radius: 14px; padding: 5px 10px; background: #faf8ff; color: #6b5b95; font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.update-rollback:hover:not(:disabled) { background: #ede9fe; color: #4c1d95; }
 .panel-action {
   width: 100%; margin-top: 6px; border: 1px solid #c4b5fd; border-radius: 10px; padding: 6px 10px;
   background: #f5f0ff; color: #58308e; font: inherit; font-weight: 600; cursor: pointer;

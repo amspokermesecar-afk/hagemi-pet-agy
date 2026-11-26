@@ -417,7 +417,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     item(ui.work_status_enabled || 'Work status linkage', () => patch({ workStatusEnabled: !settings.workStatusEnabled }), settings.workStatusEnabled !== false);
     item(ui.notify_enabled || 'System notifications', () => patch({ notifications: { enabled: !(settings.notifications?.enabled !== false) } }), settings.notifications?.enabled !== false);
     item(ui.settings || 'Settings…', () => openPanel());
-    item((updateState.phase === 'available' ? ui.update_available_menu : ui.update_menu) || '🐾 Check for updates…', () => { openPanel(); if (updateState.phase === 'idle') send({ type: 'update_check' }); });
+    item((updateState.phase === 'available' ? ui.update_available_menu : ui.update_menu) || '🐾 Check for updates…', () => { openPanel(); if (updateState.phase === 'idle' || updateState.phase === 'cooling') send({ type: 'update_check', manual: true }); });
     item(ui.hide || 'Hide for 1 hour', () => patch({ hiddenUntil: Date.now() + 3600000 }));
     menu.classList.add('show');
     const width = menu.offsetWidth, height = menu.offsetHeight;
@@ -449,14 +449,51 @@ HAGEMI.boot = async function boot(send, options = {}) {
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     status.textContent = ui[`update_status_${updateState.phase}`] || ui.update_status_idle;
-    if (['available', 'manual'].includes(updateState.phase) && updateState.latestSha) status.textContent += ` (${updateState.latestSha.slice(0, 7)})`;
+    if (['available', 'manual', 'cooling'].includes(updateState.phase) && updateState.latestSha) status.textContent += ` (${updateState.latestSha.slice(0, 7)})`;
+    if (['available', 'cooling'].includes(updateState.phase)) {
+      if (updateState.summary) {
+        const meta = make('div', 'update-meta', updateCard);
+        const countPrefix = updateState.commitCount > 1 ? `[+${updateState.commitCount}] ` : '';
+        meta.textContent = `${countPrefix}${updateState.summary}`;
+      }
+      if (updateState.totalFiles > 0 || updateState.sensitiveFiles?.length) {
+        const risk = make('div', 'update-risk', updateCard);
+        const high = updateState.riskLevel === 'high' && updateState.sensitiveFiles?.length;
+        risk.dataset.level = high ? 'high' : 'low';
+        if (high) {
+          const preview = updateState.sensitiveFiles.slice(0, 3).join(', ') + (updateState.sensitiveFiles.length > 3 ? '…' : '');
+          risk.textContent = (ui.update_risk_high || 'Sensitive files changed ({files}).').replace('{files}', preview);
+        } else {
+          risk.textContent = (ui.update_risk_low || '{count} file(s) changed.').replace('{count}', String(updateState.totalFiles || 0));
+        }
+      }
+      if (updateState.inCooldown && updateState.phase === 'available') {
+        make('div', 'panel-note update-reason', updateCard).textContent = (ui.update_cooldown_note || 'Published within cooldown ({hours}h remaining).').replace('{hours}', String(updateState.cooldownRemainingHours || 1));
+      }
+      if (updateState.compareUrl) {
+        const links = make('div', 'update-links', updateCard);
+        const diffLink = make('a', 'panel-link', links);
+        diffLink.href = updateState.compareUrl;
+        diffLink.target = '_blank';
+        diffLink.rel = 'noopener noreferrer';
+        diffLink.textContent = ui.update_diff_link || 'View diff on GitHub';
+        const sig = make('span', 'panel-note', links);
+        sig.textContent = updateState.verified ? (ui.update_signed || 'Verified signature') : (ui.update_unsigned || 'Unsigned commit');
+      }
+    }
     if (updateState.reason) make('div', 'panel-note update-reason', updateCard).textContent = ui[`update_reason_${updateState.reason}`] || '';
     const button = make('button', 'update-button', updateCard);
     button.type = 'button';
     const install = updateState.phase === 'available' && updateState.canInstall;
     button.textContent = install ? ui.update_install : updateState.phase === 'checking' ? ui.update_checking : updateState.phase === 'installing' ? ui.update_installing : updateState.phase === 'installed' ? ui.update_installed : ui.update_check;
     button.disabled = ['checking', 'installing', 'installed'].includes(updateState.phase);
-    button.addEventListener('click', () => send({ type: install ? 'update_install' : 'update_check' }));
+    button.addEventListener('click', () => send(install ? { type: 'update_install' } : { type: 'update_check', manual: true }));
+    if (updateState.canRollback && updateState.rollbackSha && !['checking', 'installing', 'installed'].includes(updateState.phase)) {
+      const rb = make('button', 'update-rollback', updateCard);
+      rb.type = 'button';
+      rb.textContent = (ui.update_rollback || '↩️ Roll back to {sha}').replace('{sha}', updateState.rollbackSha.slice(0, 7));
+      rb.addEventListener('click', () => send({ type: 'update_rollback' }));
+    }
   }
   function openPanel() {
     panel.replaceChildren();
@@ -515,6 +552,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
     field(ui.work_status_enabled || 'Work status linkage', check(s.workStatusEnabled !== false, value => patch({ workStatusEnabled: value })));
     field(ui.autoCheckUpdates, check(s.autoCheckUpdates, value => patch({ autoCheckUpdates: value })));
+    field(ui.updateCooldownHours || 'Auto-update cooldown (hours)', number(s.updateCooldownHours ?? 24, 0, 168, value => patch({ updateCooldownHours: value })));
     field(ui.quotaHoverDelayMs || 'Quota hover delay (ms, 0 = instant)', number(s.quotaHoverDelayMs, 0, 10000, value => patch({ quotaHoverDelayMs: value })));
     field(ui.mute || 'Mute comments', check(s.muted, value => patch({ muted: value })));
     const notif = s.notifications || {};

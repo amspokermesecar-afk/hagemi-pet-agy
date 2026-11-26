@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { runGit, Updater, UPDATE_REPO } from '../sidecars/pet/lib/updater.mjs';
+import { classifyUpdateRisk, DEFAULT_REPO_SLUG, parseRepoSlug, runGit, Updater, UPDATE_REPO } from '../sidecars/pet/lib/updater.mjs';
 
 const sha = c => c.repeat(40);
 function fake({ current = sha('a'), latest = sha('b'), status = 'ahead', dirty = false, installed = true, fetchFn, gitFn } = {}) {
@@ -103,6 +103,7 @@ function fixture(t) {
   let restarted = 0, fetches = 0;
   const updater = new Updater({
     root, installedRoot: root,
+    stateFile: join(data, 'last-good-sha.json'),
     git: (cwd, args) => {
       if (args[0] === 'fetch') { assert.equal(args[2], UPDATE_REPO); assert.equal(args[3], latest); args = [...args]; args[2] = upstream; fetches++; }
       return runGit(cwd, args);
@@ -165,4 +166,117 @@ test('failed fetching leaves the installed revision intact', async t => {
   assert.equal(f.updater.state.reason, 'install_failed');
   assert.equal(f.git(f.root, 'rev-parse', 'HEAD'), f.initial);
   assert.equal(f.restarted, 0);
+});
+
+test('classifyUpdateRisk flags core runtime and permission files as high risk', () => {
+  const low = classifyUpdateRisk([{ filename: 'sidecars/pet/art/idle.webp' }, { filename: 'sidecars/pet/lib/lines.mjs' }]);
+  assert.equal(low.riskLevel, 'low');
+  assert.deepEqual(low.sensitiveFiles, []);
+  assert.equal(low.totalFiles, 2);
+
+  const high = classifyUpdateRisk([
+    { filename: 'sidecars/pet/lib/lines.mjs' },
+    { filename: 'sidecars/pet/lib/ls-client.mjs' },
+    { filename: 'sidecars/pet/desktop/electron-main.cjs' },
+    { filename: 'package.json' },
+  ]);
+  assert.equal(high.riskLevel, 'high');
+  assert.deepEqual(high.sensitiveFiles, ['sidecars/pet/lib/ls-client.mjs', 'sidecars/pet/desktop/electron-main.cjs', 'package.json']);
+});
+
+test('parseRepoSlug validates owner/repo format and rejects unsafe inputs', () => {
+  assert.equal(parseRepoSlug('alice/hagemi-pet-agy'), 'alice/hagemi-pet-agy');
+  assert.equal(parseRepoSlug('https://github.com/alice/hagemi-pet-agy.git'), 'alice/hagemi-pet-agy');
+  assert.equal(parseRepoSlug('https://evil.example/a/b'), DEFAULT_REPO_SLUG);
+  assert.equal(parseRepoSlug('../weird'), DEFAULT_REPO_SLUG);
+  assert.equal(parseRepoSlug('alice/..'), DEFAULT_REPO_SLUG);
+  assert.equal(parseRepoSlug('alice/.hidden'), DEFAULT_REPO_SLUG);
+});
+
+test('cooldown gates background checks while allowing manual review with diff metadata', async () => {
+  let clock = Date.parse('2026-11-26T12:00:00Z');
+  const publishedAt = '2026-11-26T06:00:00Z'; // 6 hours old
+  const root = join(tmpdir(), 'hagemi-updater-cooldown');
+  const updater = new Updater({
+    root,
+    installedRoot: root,
+    getCooldownHours: () => 24,
+    now: () => clock,
+    git: async (_cwd, args) => {
+      if (args[0] === 'rev-parse') return args[1] === '--show-toplevel' ? root : sha('a');
+      if (args[0] === 'status') return '';
+      return '';
+    },
+    fetchFn: async url => ({
+      ok: true,
+      json: async () => url.includes('/compare/')
+        ? {
+          status: 'ahead',
+          ahead_by: 2,
+          html_url: `https://github.com/${DEFAULT_REPO_SLUG}/compare/${sha('a')}...${sha('b')}`,
+          files: [{ filename: 'sidecars/pet/lib/updater.mjs' }],
+          commits: [{ commit: { message: 'Harden updater\nbody', committer: { date: publishedAt }, verification: { verified: true } } }],
+        }
+        : { sha: sha('b'), commit: { message: 'Harden updater', committer: { date: publishedAt }, verification: { verified: true } } },
+    }),
+  });
+
+  const bg = await updater.check({ manual: false });
+  assert.equal(bg.phase, 'cooling');
+  assert.equal(bg.canInstall, false);
+  assert.equal(bg.reason, 'cooldown');
+  assert.equal(bg.riskLevel, 'high');
+  assert.equal(bg.cooldownRemainingHours, 18);
+
+  const manual = await updater.check({ manual: true });
+  assert.equal(manual.phase, 'available');
+  assert.equal(manual.canInstall, true);
+  assert.equal(manual.inCooldown, true);
+  assert.equal(manual.verified, true);
+  assert.equal(manual.summary, 'Harden updater');
+  assert.equal(manual.commitCount, 2);
+  assert.match(manual.compareUrl, /^https:\/\/github\.com\//);
+
+  clock += 20 * 3600000;
+  const aged = await updater.check({ manual: false });
+  assert.equal(aged.phase, 'available');
+  assert.equal(aged.inCooldown, false);
+});
+
+test('a real update records rollback state and supports clean one-click rollback', async t => {
+  const f = fixture(t);
+  await f.updater.check();
+  await f.updater.install();
+  assert.equal(f.git(f.root, 'rev-parse', 'HEAD'), f.latest);
+
+  // Simulate post-restart Updater reading last-good-sha.json.
+  let rollbackRestarts = 0;
+  const afterRestart = new Updater({
+    root: f.root,
+    installedRoot: f.root,
+    stateFile: join(f.data, 'last-good-sha.json'),
+    git: runGit,
+    onInstalled: () => rollbackRestarts++,
+  });
+  const local = await afterRestart.local();
+  afterRestart.publish(local);
+  assert.equal(afterRestart.state.rollbackSha, f.initial);
+  assert.equal(afterRestart.state.canRollback, true);
+
+  // Dirty edits block rollback so user work is never wiped.
+  writeFileSync(join(f.root, 'pet.txt'), 'unsaved local edit');
+  await afterRestart.rollback();
+  assert.equal(afterRestart.state.phase, 'error');
+  assert.equal(f.git(f.root, 'rev-parse', 'HEAD'), f.latest);
+  assert.equal(rollbackRestarts, 0);
+
+  // Once clean, rollback restores the recorded ancestor commit and preserves settings.
+  f.git(f.root, 'restore', 'pet.txt');
+  afterRestart.publish(await afterRestart.local());
+  await afterRestart.rollback();
+  assert.equal(afterRestart.state.phase, 'installed');
+  assert.equal(f.git(f.root, 'rev-parse', 'HEAD'), f.initial);
+  assert.equal(readFileSync(join(f.root, 'pet.txt'), 'utf8'), 'old paws');
+  assert.equal(readFileSync(join(f.data, 'settings.json'), 'utf8'), '{"language":"zhs"}');
+  assert.equal(rollbackRestarts, 1);
 });

@@ -87,6 +87,8 @@ function broadcastAll(message) {
 const updater = new Updater({
   root: pluginRoot,
   installedRoot: join(geminiDir, 'config', 'plugins', 'hagemi-pet-agy'),
+  stateFile: join(dataDir, 'last-good-sha.json'),
+  getCooldownHours: () => settings.value.updateCooldownHours,
   log,
   onChange: update => broadcastAll({ t: 'update', update }),
   onInstalled: () => {
@@ -371,10 +373,13 @@ function onPetMessage(message, session) {
       sendTo(session, { t: 'update', update: updater.state });
       break;
     case 'update_check':
-      updater.check();
+      updater.check({ manual: message.manual !== false });
       break;
     case 'update_install':
       updater.install();
+      break;
+    case 'update_rollback':
+      updater.rollback();
       break;
     case 'art':
       sendTo(session, { t: 'art', name: message.name, data: readArt(message.name) });
@@ -458,7 +463,7 @@ function syncDesktopFallback() {
 }
 
 const timers = [setInterval(pollQuota, 60000), setInterval(pollModel, 20000), setInterval(ambient, 5 * MINUTE)];
-const checkUpdates = () => { if (settings.value.autoCheckUpdates) updater.check(); };
+const checkUpdates = () => { if (settings.value.autoCheckUpdates) updater.check({ manual: false }); };
 timers.push(setTimeout(checkUpdates, 15000), setInterval(checkUpdates, UPDATE_INTERVAL_MS));
 timers.push(setTimeout(syncDesktopFallback, 1500), setInterval(syncDesktopFallback, 10000));
 for (const timer of timers) timer.unref?.();
