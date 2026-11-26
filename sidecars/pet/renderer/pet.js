@@ -534,6 +534,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     const choices = [...new Set([ai.model, ...modelChoices])].filter(Boolean).map(label => [label, label]);
     field(ui.ai_model || 'Model', select(ai.model, choices, value => patch({ ai: { model: value } })));
     field(ui.ai_contextLevel || 'What she can see', select(ai.contextLevel, [['minimal', ui.context_minimal], ['titles', ui.context_titles], ['snippets', ui.context_snippets]], value => patch({ ai: { contextLevel: value } })));
+    field(ui.ai_sameFamilySnippetsOnly || 'Keep excerpts within same model family', check(ai.sameFamilySnippetsOnly !== false, value => patch({ ai: { sameFamilySnippetsOnly: value } })));
     field(ui.ai_minIntervalMin || 'Minutes between', number(ai.minIntervalMin, 1, 1440, value => patch({ ai: { minIntervalMin: value } })));
     field(ui.ai_maxPerHour || 'Max per hour', number(ai.maxPerHour, 0, 60, value => patch({ ai: { maxPerHour: value } })));
     field(ui.ai_maxPerDay || 'Max per day', number(ai.maxPerDay, 0, 500, value => patch({ ai: { maxPerDay: value } })));
@@ -771,7 +772,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     const localIdleMs = Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt));
     const idleMs = options.desktop ? Math.min(localIdleMs, Math.round(desktopIdleSec * 1000)) : localIdleMs;
     const focused = options.desktop ? (!document.hidden && desktopIdleSec < 300) : document.hasFocus();
-    send({ type: 'presence', visible: !document.hidden, focused, idleMs, language: navigator.language });
+    send({ type: 'presence', desktop: Boolean(options.desktop), visible: !document.hidden, focused, idleMs, language: navigator.language });
   };
   listen(document, 'visibilitychange', presence);
   listen(window, 'focus', presence);

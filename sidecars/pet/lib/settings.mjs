@@ -26,12 +26,13 @@ export const DEFAULTS = Object.freeze({
   ai: Object.freeze({
     enabled: true,
     model: 'Gemini 3.8 Flash (Low)',
-    minIntervalMin: 2,
-    maxPerHour: 30,
-    maxPerDay: 300,
-    dailyTokenBudget: 200000,
-    pauseBelowQuota: 0.1,
+    minIntervalMin: 5,
+    maxPerHour: 12,
+    maxPerDay: 80,
+    dailyTokenBudget: 60000,
+    pauseBelowQuota: 0.15,
     contextLevel: 'snippets',
+    sameFamilySnippetsOnly: true,
     onlyWhenFocused: true,
     personaExtra: '',
   }),
@@ -44,14 +45,21 @@ const number = (value, low, high, fallback) => {
 };
 const bool = (value, fallback) => (typeof value === 'boolean' ? value : fallback);
 
-const SETTINGS_VERSION = 2;
-// Version 1 saved every value, defaults included, which would have pinned them forever.
-// Values still matching the old defaults were never chosen, so they follow the new ones.
-const V1_AI_DEFAULTS = { minIntervalMin: 10, maxPerHour: 4, maxPerDay: 24, dailyTokenBudget: 12000, pauseBelowQuota: 0.15 };
+const SETTINGS_VERSION = 3;
+// Earlier versions saved older defaults; values still matching them follow the newer defaults.
+const LEGACY_AI_DEFAULTS = [
+  { version: 1, values: { minIntervalMin: 10, maxPerHour: 4, maxPerDay: 24, dailyTokenBudget: 12000, pauseBelowQuota: 0.15 } },
+  { version: 2, values: { minIntervalMin: 2, maxPerHour: 30, maxPerDay: 300, dailyTokenBudget: 200000, pauseBelowQuota: 0.1 } },
+];
 function migrate(saved) {
-  if (saved.version >= SETTINGS_VERSION) return saved;
+  const version = Number(saved.version) || 1;
+  if (version >= SETTINGS_VERSION) return saved;
   const ai = { ...saved.ai };
-  for (const [key, value] of Object.entries(V1_AI_DEFAULTS)) if (ai[key] === value) delete ai[key];
+  for (const entry of LEGACY_AI_DEFAULTS) {
+    if (version <= entry.version) {
+      for (const [key, value] of Object.entries(entry.values)) if (ai[key] === value) delete ai[key];
+    }
+  }
   return { ...saved, ai };
 }
 
@@ -106,6 +114,7 @@ export function sanitize(input = {}, base = DEFAULTS) {
       dailyTokenBudget: number(ai.dailyTokenBudget, 0, 500000, base.ai.dailyTokenBudget),
       pauseBelowQuota: number(ai.pauseBelowQuota, 0, 1, base.ai.pauseBelowQuota),
       contextLevel: oneOf(ai.contextLevel, ['minimal', 'titles', 'snippets'], base.ai.contextLevel),
+      sameFamilySnippetsOnly: bool(ai.sameFamilySnippetsOnly, base.ai.sameFamilySnippetsOnly),
       onlyWhenFocused: bool(ai.onlyWhenFocused, base.ai.onlyWhenFocused),
       personaExtra: typeof ai.personaExtra === 'string' ? ai.personaExtra.slice(0, 600) : base.ai.personaExtra,
     },

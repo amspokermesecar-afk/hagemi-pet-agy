@@ -5,20 +5,21 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULTS, sanitize, SettingsStore } from '../sidecars/pet/lib/settings.mjs';
 
-test('defaults match the promises in the README', () => {
+test('defaults match the hardened AI safety guarantees', () => {
   assert.equal(DEFAULTS.ai.model, 'Gemini 3.8 Flash (Low)');
   assert.equal(DEFAULTS.language, 'auto');
   assert.equal(DEFAULTS.ai.enabled, true);
-  assert.equal(DEFAULTS.ai.pauseBelowQuota, 0.1);
+  assert.equal(DEFAULTS.ai.pauseBelowQuota, 0.15);
   assert.equal(DEFAULTS.ai.contextLevel, 'snippets');
+  assert.equal(DEFAULTS.ai.sameFamilySnippetsOnly, true);
   assert.equal(DEFAULTS.autoCheckUpdates, true);
 });
 
-test('the default rate and daily token budget match the README', () => {
-  assert.equal(DEFAULTS.ai.minIntervalMin, 2);
-  assert.equal(DEFAULTS.ai.maxPerHour, 30);
-  assert.equal(DEFAULTS.ai.maxPerDay, 300);
-  assert.equal(DEFAULTS.ai.dailyTokenBudget, 200000);
+test('the default rate and daily token budget use conservative limits', () => {
+  assert.equal(DEFAULTS.ai.minIntervalMin, 5);
+  assert.equal(DEFAULTS.ai.maxPerHour, 12);
+  assert.equal(DEFAULTS.ai.maxPerDay, 80);
+  assert.equal(DEFAULTS.ai.dailyTokenBudget, 60000);
 });
 
 test('old settings files pick up new defaults but keep real choices', () => {
@@ -33,22 +34,33 @@ test('old settings files pick up new defaults but keep real choices', () => {
   assert.equal(value.ai.pauseBelowQuota, DEFAULTS.ai.pauseBelowQuota);
 });
 
+test('v2 default AI limits migrate to v3 defaults while keeping explicit overrides', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'hagemi-')), 'settings.json');
+  writeFileSync(file, JSON.stringify({ version: 2, ai: { minIntervalMin: 2, maxPerHour: 15, maxPerDay: 300, dailyTokenBudget: 200000, pauseBelowQuota: 0.1 } }));
+  const { value } = new SettingsStore(file);
+  assert.equal(value.ai.maxPerHour, 15, 'explicit v2 override stays');
+  assert.equal(value.ai.minIntervalMin, DEFAULTS.ai.minIntervalMin);
+  assert.equal(value.ai.maxPerDay, DEFAULTS.ai.maxPerDay);
+  assert.equal(value.ai.dailyTokenBudget, DEFAULTS.ai.dailyTokenBudget);
+  assert.equal(value.ai.pauseBelowQuota, DEFAULTS.ai.pauseBelowQuota);
+});
+
 test('only changes are saved, so later default improvements reach everyone', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'hagemi-')), 'settings.json');
   new SettingsStore(file).patch({ language: 'zhs', ai: { maxPerHour: 9 } });
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { version: 2, language: 'zhs', ai: { maxPerHour: 9 } });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { version: 3, language: 'zhs', ai: { maxPerHour: 9 } });
   const reloaded = new SettingsStore(file);
   assert.equal(reloaded.value.ai.maxPerHour, 9);
   assert.equal(reloaded.value.ai.maxPerDay, DEFAULTS.ai.maxPerDay);
-  assert.equal(reloaded.value.ai.pauseBelowQuota, 0.1);
+  assert.equal(reloaded.value.ai.pauseBelowQuota, 0.15);
   // Going back to a default forgets the override.
   reloaded.patch({ ai: { maxPerHour: DEFAULTS.ai.maxPerHour } });
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { version: 2, language: 'zhs' });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { version: 3, language: 'zhs' });
 });
 
 test('an explicitly saved quota cutoff still overrides the new default', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'hagemi-')), 'settings.json');
-  writeFileSync(file, JSON.stringify({ version: 2, ai: { pauseBelowQuota: 0.05 } }));
+  writeFileSync(file, JSON.stringify({ version: 3, ai: { pauseBelowQuota: 0.05 } }));
   assert.equal(new SettingsStore(file).value.ai.pauseBelowQuota, 0.05);
 });
 

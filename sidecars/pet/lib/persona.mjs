@@ -27,8 +27,17 @@ const STRIP = [
   [/```[\s\S]*?```/g, ' [code] '],
   [/`[^`\n]{24,}`/g, ' [code] '],
   [/https?:\/\/\S+/g, ' [link] '],
-  // Anything shaped like a credential or a long blob is none of her business.
+  // Strip observation/system fence tags so untrusted text cannot escape prompt framing.
+  [/<\/?(?:observation|system|instructions?)\b[^>]*>/gi, ' '],
+  // Anything shaped like a credential, key/value secret, JWT, PII or long blob is none of her business.
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, ' [secret] '],
+  [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, ' [secret] '],
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, ' [secret] '],
   [/\b(?:sk|ghp|gho|xox[abps]|AIza|ya29)[-_A-Za-z0-9.]{12,}\b/g, ' [secret] '],
+  [/\b(?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?key)\s*[:=]\s*["']?[^\s"',;]{4,}["']?/gi, ' [secret] '],
+  [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, ' [email] '],
+  [/(?<!\d)1[3-9]\d{9}(?!\d)|(?:\+\d{1,3}[-\s]?)?\(?\d{3}\)?[-\s]\d{3,4}[-\s]\d{4}(?!\d)/g, ' [phone] '],
+  [/\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?\b/g, ' [ip] '],
   [/\b[A-Za-z0-9+/_-]{32,}={0,2}\b/g, ' [blob] '],
   [/[A-Za-z]:\\[^\s]+|\/(?:Users|home)\/[^\s]+/g, ' [path] '],
   [/\s+/g, ' '],

@@ -9,6 +9,7 @@ import { RendererBridge } from './lib/cdp.mjs';
 import { DesktopBridge } from './lib/desktop-bridge.mjs';
 import { DesktopHost } from './lib/desktop-host.mjs';
 import { ambientTriggers, chooseState, classifyTurnEnd, festival, isLate, modelFamily, REACTIONS, timeOfDay } from './lib/director.mjs';
+import { HostFocusChecker } from './lib/host-focus.mjs';
 import { fill, resolveLanguage, UI } from './lib/lines.mjs';
 import { LanguageServer } from './lib/ls-client.mjs';
 import { Monitor } from './lib/monitor.mjs';
@@ -38,7 +39,7 @@ let appLanguage = 'en';
 let facts = { running: 0, subagents: 0, category: null, idleMs: 0, quietMs: 0, connected: false };
 let quota = { level: null, mood: 'ok', buckets: [], resetInMs: null };
 let allBuckets = [];
-let presence = { visible: true, focused: true, idleMs: 0 };
+let presence = { visible: true, focused: true, idleMs: 0, desktop: false };
 let selectedModel = null;
 let activeSince = null, lastToolAt = 0;
 let lastFactsJson = '', lastLoggedState = null, lastState = null;
@@ -96,11 +97,25 @@ const updater = new Updater({
   },
 });
 updater.local().then(local => updater.publish(local));
+const hostFocus = new HostFocusChecker({
+  getAllowedPids: () => [desktopHost.pid],
+});
+
+async function resolveHostFocus() {
+  if (!presence.visible) return false;
+  if (presence.desktop || (bridge.sessions.size === 0 && desktopHost.running)) {
+    const focused = await hostFocus.isFocused();
+    if (typeof focused === 'boolean') return focused;
+  }
+  return !!presence.focused;
+}
+
 const brain = new Brain({
   ls, budget, models, log,
   getSettings: () => settings.value,
   getLanguage: language,
   getPresence: () => presence,
+  isHostFocused: resolveHostFocus,
   // Comments are paid for by their own model, not by the one selected for the agent.
   getQuotaLevel: () => levelForModel(allBuckets, models.resolve(settings.value.ai.model)?.label || settings.value.ai.model),
   say: (result, trigger) => {
@@ -120,11 +135,16 @@ function hudRows() {
 
 const lastNotified = new Map();
 let recentWorkResult = null;
-function dispatchNotification(event) {
+async function dispatchNotification(event) {
+  const cfg = settings.value?.notifications || {};
+  let focused = presence.visible && presence.focused;
+  if (event?.type !== 'test' && cfg.enabled !== false && cfg.whenFocused === false) {
+    focused = await resolveHostFocus();
+  }
   const notification = buildNotification(event, {
     language: language(),
     settings: settings.value,
-    focused: presence.visible && presence.focused,
+    focused,
   });
   if (!notification) return false;
   if (event.type !== 'test') {
@@ -244,7 +264,7 @@ function onEvent(event) {
         until: Date.now() + 10000,
       };
       setTimeout(() => publishFacts(), 10500).unref?.();
-      dispatchNotification({ ...event, type: trigger, agentText: event.agentText });
+      dispatchNotification({ ...event, type: trigger, agentText: event.agentText }).catch(error => log(`notify failed: ${error.message}`));
       moment(trigger, {
         title: event.title, toolCount: event.toolCount, durationMin: Math.round((event.durationMs || 0) / MINUTE),
         userText: event.userText, agentText: event.agentText, vars: { count: event.toolCount || 0 },
@@ -252,7 +272,7 @@ function onEvent(event) {
       break;
     }
     case 'waiting_start':
-      dispatchNotification({ type: 'waiting_start', id: event.id, title: event.title });
+      dispatchNotification({ type: 'waiting_start', id: event.id, title: event.title }).catch(error => log(`notify failed: ${error.message}`));
       break;
     case 'tool':
       lastToolAt = Date.now();
@@ -387,7 +407,12 @@ function onPetMessage(message, session) {
       break;
     }
     case 'presence':
-      presence = { visible: !!message.visible, focused: !!message.focused, idleMs: Number(message.idleMs) || 0 };
+      presence = {
+        visible: !!message.visible,
+        focused: !!message.focused,
+        idleMs: Number(message.idleMs) || 0,
+        desktop: !!message.desktop || !!session?.desktop,
+      };
       if (message.language) appLanguage = message.language;
       break;
     case 'remount':
@@ -402,7 +427,7 @@ function onPetMessage(message, session) {
       }
       break;
     case 'notify_test':
-      dispatchNotification({ type: 'test', id: facts.primaryId || null, title: facts.title || '' });
+      dispatchNotification({ type: 'test', id: facts.primaryId || null, title: facts.title || '' }).catch(error => log(`notify failed: ${error.message}`));
       break;
     case 'focus_conversation':
       bridge.focusConversation(message.conversationId);
