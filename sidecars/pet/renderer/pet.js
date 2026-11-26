@@ -48,11 +48,13 @@ HAGEMI.boot = async function boot(send, options = {}) {
 
   let settings = {
     language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced',
-    followCursor: true, roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
+    followCursor: true, desktopDisplay: 'primary', alwaysOnTopLevel: 'floating',
+    roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
     notifications: { enabled: true, onDone: true, onWaiting: true, whenFocused: true }, position: null,
   };
   let ui = {};
   let updateState = { phase: 'idle' }, updateCard = null;
+  let desktopDisplays = [];
   let hudRows = [];
   let workBadge = null, baseState = 'idle', facing = 1, roam = null, lastPlayId = null;
   let nextAutoAt = performance.now() + rand(5000, 9000);
@@ -512,6 +514,22 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.animation || 'Animation', select(s.animation, [['smooth', ui.animation_smooth], ['balanced', ui.animation_balanced], ['saver', ui.animation_saver]], value => patch({ animation: value })));
     field(ui.chattiness || 'Chattiness', select(s.chattiness, [['quiet', ui.chattiness_quiet], ['normal', ui.chattiness_normal], ['chatty', ui.chattiness_chatty]], value => patch({ chattiness: value })));
     field(ui.followCursor || 'Watch the cursor', check(s.followCursor, value => patch({ followCursor: value })));
+    if (options.desktop) {
+      const displayChoices = [
+        ['primary', ui.desktopDisplay_primary || 'Primary monitor'],
+        ['cursor', ui.desktopDisplay_cursor || 'Follow cursor monitor'],
+        ...desktopDisplays.map(d => [
+          d.id,
+          (ui.desktopDisplay_item || 'Monitor {index} ({size})').replace('{index}', String(d.index)).replace('{size}', `${d.width}x${d.height}`),
+        ]),
+      ];
+      field(ui.desktopDisplay || 'Monitor (desktop overlay)', select(s.desktopDisplay || 'primary', displayChoices, value => patch({ desktopDisplay: value })));
+      field(ui.alwaysOnTopLevel || 'Always-on-top level', select(s.alwaysOnTopLevel || 'floating', [
+        ['floating', ui.level_floating || 'Floating (recommended)'],
+        ['normal', ui.level_normal || 'Normal'],
+        ['screen-saver', ui.level_screen_saver || 'Topmost (over fullscreen)'],
+      ], value => patch({ alwaysOnTopLevel: value })));
+    }
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
     field(ui.work_status_enabled || 'Work status linkage', check(s.workStatusEnabled !== false, value => patch({ workStatusEnabled: value })));
     field(ui.autoCheckUpdates, check(s.autoCheckUpdates, value => patch({ autoCheckUpdates: value })));
@@ -585,7 +603,22 @@ HAGEMI.boot = async function boot(send, options = {}) {
     syncWorkPill();
     send({ type: 'settings', patch: change });
   }
+  function syncDesktopWindowPrefs() {
+    if (!options.desktop) return;
+    window.__hagemiDesktop?.setWindowPrefs?.({
+      display: settings.desktopDisplay || 'primary',
+      level: settings.alwaysOnTopLevel || 'floating',
+    });
+  }
+  function refreshDisplays() {
+    if (!options.desktop || !window.__hagemiDesktop?.listDisplays) return;
+    window.__hagemiDesktop.listDisplays().then(list => {
+      if (Array.isArray(list)) desktopDisplays = list;
+    }).catch(() => {});
+  }
+  refreshDisplays();
   function applyVisibility() {
+    syncDesktopWindowPrefs();
     const hidden = settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
     stage.style.display = hidden ? 'none' : 'block';
     if (hidden) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); syncWorkPill(); syncDesktopHit(false, false, false, false); }
@@ -745,7 +778,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   }, { passive: true, capture: true });
   // Only the time of the keystroke is ever used; the key itself is never read.
   listen(window, 'keydown', () => { lastKeyAt = performance.now(); }, { passive: true, capture: true });
-  listen(window, 'resize', () => { applySize(); settle(); }, { passive: true });
+  listen(window, 'resize', () => { applySize(); settle(); refreshDisplays(); }, { passive: true });
 
   if (options.desktop) {
     listen(document, 'pointerleave', () => { if (!dragging) syncDesktopHit(false, false, false, false); });

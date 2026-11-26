@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('__hagemiDesktop', {
   setInteractive: interactive => ipcRenderer.send('hagemi:hit', !!interactive),
+  setWindowPrefs: payload => ipcRenderer.send('hagemi:window-prefs', payload),
+  listDisplays: () => ipcRenderer.invoke('hagemi:displays'),
   getIdleSec: () => ipcRenderer.invoke('hagemi:idle'),
   notify: payload => ipcRenderer.send('hagemi:notify', payload),
   focusConversation: payload => ipcRenderer.send('hagemi:focus-conversation', payload),

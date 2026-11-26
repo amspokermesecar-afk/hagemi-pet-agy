@@ -39,7 +39,10 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
 const ICON_PATH = join(__dirname, '..', '..', '..', 'assets', 'logo.png');
 const activeNotifications = new Set();
+const VALID_LEVELS = new Set(['floating', 'normal', 'screen-saver']);
 let win = null;
+let targetDisplayPref = 'primary';
+let topLevelPref = 'floating';
 
 function focusAntigravity(payload = {}) {
   const rawId = typeof payload?.conversationId === 'string' ? payload.conversationId : '';
@@ -48,12 +51,35 @@ function focusAntigravity(payload = {}) {
   shell.openExternal(deepUrl).catch(() => shell.openExternal('antigravity://').catch(() => {}));
 }
 
+function resolveTargetDisplay() {
+  const displays = screen.getAllDisplays();
+  if (targetDisplayPref === 'cursor') {
+    try {
+      return screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
+    } catch {
+      return screen.getPrimaryDisplay();
+    }
+  }
+  if (/^\d{1,20}$/.test(targetDisplayPref)) {
+    const matched = displays.find(d => String(d.id) === targetDisplayPref);
+    if (matched) return matched;
+  }
+  return screen.getPrimaryDisplay();
+}
+
 function syncBounds() {
   if (!win || win.isDestroyed()) return;
-  const area = screen.getPrimaryDisplay().workArea;
+  const area = resolveTargetDisplay().workArea;
+  const cur = win.getBounds();
+  if (cur.x === area.x && cur.y === area.y && cur.width === area.width && cur.height === area.height) return;
   win.setResizable(true);
   win.setBounds(area);
   win.setResizable(false);
+}
+
+function applyTopLevel() {
+  if (!win || win.isDestroyed()) return;
+  win.setAlwaysOnTop(true, topLevelPref);
 }
 
 function isParentAlive(pid) {
@@ -94,7 +120,7 @@ app.whenReady().then(() => {
     },
   });
 
-  win.setAlwaysOnTop(true, 'screen-saver');
+  applyTopLevel();
   win.setIgnoreMouseEvents(true, { forward: true });
 
   win.once('ready-to-show', () => {
@@ -144,6 +170,33 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('hagemi:idle', () => powerMonitor.getSystemIdleTime());
+
+  ipcMain.handle('hagemi:displays', () => {
+    const primaryId = screen.getPrimaryDisplay().id;
+    return screen.getAllDisplays().map((d, index) => ({
+      id: String(d.id),
+      primary: d.id === primaryId,
+      index: index + 1,
+      width: d.workArea.width,
+      height: d.workArea.height,
+    }));
+  });
+
+  ipcMain.on('hagemi:window-prefs', (_event, payload = {}) => {
+    const nextDisplay = typeof payload.display === 'string' && (payload.display === 'primary' || payload.display === 'cursor' || /^\d{1,20}$/.test(payload.display))
+      ? payload.display
+      : null;
+    if (nextDisplay && nextDisplay !== targetDisplayPref) {
+      targetDisplayPref = nextDisplay;
+      syncBounds();
+    } else if (targetDisplayPref === 'cursor') {
+      syncBounds();
+    }
+    if (VALID_LEVELS.has(payload.level) && payload.level !== topLevelPref) {
+      topLevelPref = payload.level;
+      applyTopLevel();
+    }
+  });
 
   ipcMain.on('hagemi:focus-conversation', (_event, payload) => {
     focusAntigravity(payload);

@@ -7,6 +7,8 @@ export const DEFAULTS = Object.freeze({
   size: 'm',
   animation: 'balanced',
   followCursor: true,
+  desktopDisplay: 'primary',
+  alwaysOnTopLevel: 'floating',
   roamEnabled: true,
   workStatusEnabled: true,
   autoCheckUpdates: true,
@@ -68,6 +70,11 @@ function changedFrom(defaults, value) {
   return out;
 }
 
+const displayId = (value, fallback) => {
+  if (value === 'primary' || value === 'cursor') return value;
+  return typeof value === 'string' && /^\d{1,20}$/.test(value) ? value : fallback;
+};
+
 export function sanitize(input = {}, base = DEFAULTS) {
   const quota = input.quota || {}, ai = input.ai || {}, notifications = input.notifications || {};
   const position = input.position;
@@ -76,6 +83,8 @@ export function sanitize(input = {}, base = DEFAULTS) {
     size: oneOf(input.size, ['xs', 's', 'm', 'l', 'xl'], base.size),
     animation: oneOf(input.animation, ['smooth', 'balanced', 'saver'], base.animation),
     followCursor: bool(input.followCursor, base.followCursor),
+    desktopDisplay: displayId(input.desktopDisplay, base.desktopDisplay),
+    alwaysOnTopLevel: oneOf(input.alwaysOnTopLevel, ['floating', 'normal', 'screen-saver'], base.alwaysOnTopLevel),
     roamEnabled: bool(input.roamEnabled, base.roamEnabled),
     workStatusEnabled: bool(input.workStatusEnabled, base.workStatusEnabled),
     autoCheckUpdates: bool(input.autoCheckUpdates, base.autoCheckUpdates),
