@@ -101,25 +101,57 @@ app.whenReady().then(() => {
     if (win && !win.isDestroyed()) win.showInactive();
   });
 
-  // Poll global OS cursor coordinates so gaze tracking stays responsive even over other windows.
+  // Adaptive global OS cursor polling: stops while hidden/locked and backs off while stationary.
   let lastCursorX = null;
   let lastCursorY = null;
-  const cursorTimer = setInterval(() => {
+  let lastCursorMoveAt = Date.now();
+  let cursorFollow = true;
+  let petHidden = false;
+  let systemLocked = false;
+  let cursorTimer = null;
+
+  function computeCursorDelay(now) {
+    if (petHidden || systemLocked) return null;
+    const idleSec = powerMonitor.getSystemIdleTime();
+    if (idleSec >= 30) return 500;
+    const stillMs = Math.max(0, now - lastCursorMoveAt);
+    if (!cursorFollow) return stillMs > 1500 ? 300 : 100;
+    return stillMs > 1500 ? 250 : 33;
+  }
+
+  function scheduleCursorPoll(overrideMs = null) {
+    clearTimeout(cursorTimer);
+    cursorTimer = null;
     if (!win || win.isDestroyed()) return;
-    try {
-      const pt = screen.getCursorScreenPoint();
-      const bounds = win.getBounds();
-      const cx = Math.round(pt.x - bounds.x);
-      const cy = Math.round(pt.y - bounds.y);
-      if (lastCursorX === null || Math.abs(cx - lastCursorX) >= 1 || Math.abs(cy - lastCursorY) >= 1) {
-        lastCursorX = cx;
-        lastCursorY = cy;
-        win.webContents.send('hagemi:cursor', { x: cx, y: cy });
-      }
-    } catch { /* Ignore transient display query errors. */ }
-  }, 33);
-  cursorTimer.unref?.();
-  win.on('closed', () => clearInterval(cursorTimer));
+    const delay = overrideMs != null ? overrideMs : computeCursorDelay(Date.now());
+    if (delay == null) return;
+    cursorTimer = setTimeout(() => {
+      cursorTimer = null;
+      if (!win || win.isDestroyed()) return;
+      const now = Date.now();
+      try {
+        const pt = screen.getCursorScreenPoint();
+        const bounds = win.getBounds();
+        const cx = Math.round(pt.x - bounds.x);
+        const cy = Math.round(pt.y - bounds.y);
+        if (lastCursorX === null || Math.abs(cx - lastCursorX) >= 1 || Math.abs(cy - lastCursorY) >= 1) {
+          lastCursorX = cx;
+          lastCursorY = cy;
+          lastCursorMoveAt = now;
+          win.webContents.send('hagemi:cursor', { x: cx, y: cy });
+        }
+      } catch { /* Ignore transient display query errors. */ }
+      scheduleCursorPoll();
+    }, delay);
+    cursorTimer.unref?.();
+  }
+
+  powerMonitor.on('lock-screen', () => { systemLocked = true; scheduleCursorPoll(); });
+  powerMonitor.on('suspend', () => { systemLocked = true; scheduleCursorPoll(); });
+  powerMonitor.on('unlock-screen', () => { systemLocked = false; lastCursorMoveAt = Date.now(); scheduleCursorPoll(50); });
+  powerMonitor.on('resume', () => { systemLocked = false; lastCursorMoveAt = Date.now(); scheduleCursorPoll(50); });
+  scheduleCursorPoll(33);
+  win.on('closed', () => clearTimeout(cursorTimer));
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -144,6 +176,16 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('hagemi:idle', () => powerMonitor.getSystemIdleTime());
+  ipcMain.handle('hagemi:idle-state', () => ({
+    idleSec: powerMonitor.getSystemIdleTime(),
+    locked: systemLocked || powerMonitor.getSystemIdleState(60) === 'locked',
+  }));
+  ipcMain.on('hagemi:cursor-tracking', (_event, payload = {}) => {
+    if (typeof payload.followCursor === 'boolean') cursorFollow = payload.followCursor;
+    if (typeof payload.hidden === 'boolean') petHidden = payload.hidden;
+    if (!petHidden && !systemLocked) lastCursorMoveAt = Date.now();
+    scheduleCursorPoll(petHidden || systemLocked ? null : 50);
+  });
 
   ipcMain.on('hagemi:focus-conversation', (_event, payload) => {
     focusAntigravity(payload);

@@ -47,7 +47,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const animator = HAGEMI.createAnimator(fx);
 
   let settings = {
-    language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced',
+    language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced', renderMode: 'auto',
     followCursor: true, roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
     notifications: { enabled: true, onDone: true, onWaiting: true, whenFocused: true }, position: null,
   };
@@ -60,7 +60,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   let x = 0, y = 0, vx = 0, vy = 0;
   let dragging = null;
   let lastOverPet = false, lastOverBubble = false, lastOverPanel = false, lastOverWork = false, lastInteractive = null;
-  let desktopIdleSec = 0;
+  let desktopIdleSec = 0, desktopLocked = false;
   const abort = new AbortController();
   const listen = (target, type, handler, extra = {}) => target.addEventListener(type, handler, { signal: abort.signal, ...extra });
 
@@ -273,7 +273,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     hud.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }
   let hoverTimer = 0;
-  function showHud() { if (hudRows.length && !dragging && !menu.classList.contains('show') && !panel.classList.contains('show')) { renderHud(); hud.classList.add('show'); placeHud(); animator.setMood({ showStash: true }); syncWorkPill(); } }
+  function showHud() { if (hudRows.length && !dragging && !menu.classList.contains('show') && !panel.classList.contains('show')) { send({ type: 'hud_hover' }); renderHud(); hud.classList.add('show'); placeHud(); animator.setMood({ showStash: true }); syncWorkPill(); } }
   function hideHud() { hud.classList.remove('show'); animator.setMood({ showStash: false }); syncWorkPill(); }
 
   function pointInVisible(el, cx, cy) {
@@ -510,6 +510,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.language || 'Language', select(s.language, [['auto', ui.language_auto], ['en', ui.language_en], ['zhs', ui.language_zhs]], value => patch({ language: value })));
     field(ui.size || 'Size', select(s.size, [['xs', ui.size_xs], ['s', ui.size_s], ['m', ui.size_m], ['l', ui.size_l], ['xl', ui.size_xl]], value => patch({ size: value })));
     field(ui.animation || 'Animation', select(s.animation, [['smooth', ui.animation_smooth], ['balanced', ui.animation_balanced], ['saver', ui.animation_saver]], value => patch({ animation: value })));
+    field(ui.renderMode || 'Display mode', select(s.renderMode || 'auto', [['auto', ui.renderMode_auto || 'Auto'], ['desktop', ui.renderMode_desktop || 'Desktop overlay only'], ['cdp', ui.renderMode_cdp || 'App window only (CDP)']], value => patch({ renderMode: value })));
     field(ui.chattiness || 'Chattiness', select(s.chattiness, [['quiet', ui.chattiness_quiet], ['normal', ui.chattiness_normal], ['chatty', ui.chattiness_chatty]], value => patch({ chattiness: value })));
     field(ui.followCursor || 'Watch the cursor', check(s.followCursor, value => patch({ followCursor: value })));
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
@@ -585,9 +586,19 @@ HAGEMI.boot = async function boot(send, options = {}) {
     syncWorkPill();
     send({ type: 'settings', patch: change });
   }
+  let lastCursorTrackKey = '';
+  function syncCursorTracking(hidden) {
+    if (!options.desktop) return;
+    const followCursor = settings.followCursor !== false;
+    const key = `${followCursor ? 1 : 0}:${hidden ? 1 : 0}`;
+    if (key === lastCursorTrackKey) return;
+    lastCursorTrackKey = key;
+    window.__hagemiDesktop?.setCursorTracking?.({ followCursor, hidden: !!hidden });
+  }
   function applyVisibility() {
     const hidden = settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
     stage.style.display = hidden ? 'none' : 'block';
+    syncCursorTracking(hidden);
     if (hidden) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); syncWorkPill(); syncDesktopHit(false, false, false, false); }
     else { syncWorkPill(); syncDesktopHit(); }
   }
@@ -761,17 +772,25 @@ HAGEMI.boot = async function boot(send, options = {}) {
 
   // Tell the sidecar when nobody is looking, so she does not spend tokens on an empty room.
   const pollDesktopIdle = async () => {
-    if (!options.desktop || !window.__hagemiDesktop?.getIdleSec) return;
+    if (!options.desktop) return;
     try {
-      const sec = await window.__hagemiDesktop.getIdleSec();
-      if (Number.isFinite(sec) && sec >= 0) desktopIdleSec = sec;
+      if (window.__hagemiDesktop?.getIdleState) {
+        const info = await window.__hagemiDesktop.getIdleState();
+        if (Number.isFinite(info?.idleSec) && info.idleSec >= 0) desktopIdleSec = info.idleSec;
+        desktopLocked = !!info?.locked;
+        return;
+      }
+      if (window.__hagemiDesktop?.getIdleSec) {
+        const sec = await window.__hagemiDesktop.getIdleSec();
+        if (Number.isFinite(sec) && sec >= 0) desktopIdleSec = sec;
+      }
     } catch { /* Ignore IPC failure. */ }
   };
   const presence = () => {
     const localIdleMs = Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt));
     const idleMs = options.desktop ? Math.min(localIdleMs, Math.round(desktopIdleSec * 1000)) : localIdleMs;
-    const focused = options.desktop ? (!document.hidden && desktopIdleSec < 300) : document.hasFocus();
-    send({ type: 'presence', visible: !document.hidden, focused, idleMs, language: navigator.language });
+    const focused = options.desktop ? (!document.hidden && !desktopLocked && desktopIdleSec < 300) : document.hasFocus();
+    send({ type: 'presence', visible: !document.hidden && !desktopLocked, focused, locked: desktopLocked, idleMs, language: navigator.language });
   };
   listen(document, 'visibilitychange', presence);
   listen(window, 'focus', presence);
@@ -796,10 +815,11 @@ HAGEMI.boot = async function boot(send, options = {}) {
   function frame(now) {
     raf = requestAnimationFrame(frame);
     if (!host.isConnected) { dispose(); return; }
-    if (document.hidden || stage.style.display === 'none') { lastFrame = now; return; }
+    if (document.hidden || stage.style.display === 'none' || desktopLocked) { lastFrame = now; return; }
     const gazeMoving = Math.abs(gazeX - gazeGoalX) > 0.015 || Math.abs(gazeY - gazeGoalY) > 0.015;
     const lively = animator.busy || dragging || roam || Math.hypot(vx, vy) > 3 || speech || fade < 1 || gazeMoving;
-    const fpsCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 0 : 30;
+    const baseCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 0 : 30;
+    const fpsCap = !lively && animator.state === 'sleeping' ? 12 : baseCap;
     if (fpsCap && now - lastFrame < 1000 / fpsCap - 2) return;
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;

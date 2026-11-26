@@ -2,7 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('__hagemiDesktop', {
   setInteractive: interactive => ipcRenderer.send('hagemi:hit', !!interactive),
+  setCursorTracking: payload => ipcRenderer.send('hagemi:cursor-tracking', payload),
   getIdleSec: () => ipcRenderer.invoke('hagemi:idle'),
+  getIdleState: () => ipcRenderer.invoke('hagemi:idle-state'),
   notify: payload => ipcRenderer.send('hagemi:notify', payload),
   focusConversation: payload => ipcRenderer.send('hagemi:focus-conversation', payload),
   onCursorMove: cb => {
