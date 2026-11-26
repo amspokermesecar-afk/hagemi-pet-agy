@@ -65,9 +65,13 @@ async function discover() {
 }
 
 export class LanguageServer {
-  constructor({ env = process.env, discoverFn = discover, transport = post } = {}) {
+  constructor({ env = process.env, discoverFn = discover, transport = post, onFatalDisconnect = null, fatalThreshold = 3 } = {}) {
     this.transport = transport;
     this.discoverFn = discoverFn;
+    this.onFatalDisconnect = onFatalDisconnect;
+    this.fatalThreshold = Math.max(1, Number(fatalThreshold) || 3);
+    this.consecutiveFatalErrors = 0;
+    this.fatalTriggered = false;
     this.endpoint = null;
     const address = env.ANTIGRAVITY_LS_ADDRESS, csrf = env.ANTIGRAVITY_CSRF_TOKEN;
     if (address && csrf) {
@@ -80,11 +84,23 @@ export class LanguageServer {
   async call(method, body = {}, timeoutMs = 12000) {
     if (!this.endpoint) this.endpoint = await this.discoverFn();
     try {
-      return await this.transport(this.endpoint.host, this.endpoint.port, this.endpoint.csrf, method, body, timeoutMs);
+      const res = await this.transport(this.endpoint.host, this.endpoint.port, this.endpoint.csrf, method, body, timeoutMs);
+      this.consecutiveFatalErrors = 0;
+      return res;
     } catch (error) {
-      // A language server restart invalidates both the port and the token. The host restarts
-      // sidecars when that happens; in dev mode, look again next time.
-      if (!this.fromHost && (error.status === 401 || error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET')) this.endpoint = null;
+      const isFatal = error.status === 401 || error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET';
+      if (isFatal) {
+        // A language server restart invalidates both the port and the token.
+        if (!this.fromHost) {
+          this.endpoint = null;
+        } else {
+          this.consecutiveFatalErrors++;
+          if (!this.fatalTriggered && this.consecutiveFatalErrors >= this.fatalThreshold && typeof this.onFatalDisconnect === 'function') {
+            this.fatalTriggered = true;
+            this.onFatalDisconnect(error);
+          }
+        }
+      }
       throw error;
     }
   }

@@ -24,6 +24,7 @@ function harness(overrides = {}) {
   const brain = new Brain({
     ls, budget, models: new ModelResolver(ls), now: () => now, random: () => 0,
     getSettings: () => settings.value, getLanguage: () => overrides.language || 'en', getPresence: () => presence,
+    isHostFocused: overrides.isHostFocused ?? null,
     getQuotaLevel: () => overrides.quotaLevel ?? 0.9, say: (result, trigger) => said.push({ ...result, trigger }),
   });
   return { brain, said, calls, budget, settings, advance: minutes => { now += minutes * 60000; } };
@@ -62,13 +63,13 @@ test('nobody watching, no tokens', async () => {
   assert.equal(modelCalls(calls).length, 0);
 });
 
-test('the 10% quota cutoff applies to both the bucket and the model itself', async () => {
+test('the quota cutoff applies to both the bucket and the model itself', async () => {
   for (const source of ['quotaLevel', 'modelQuota']) {
-    for (const level of [0.09, 0.1, 0.101]) {
+    for (const level of [0.14, 0.15, 0.151]) {
       const { brain, calls, said } = harness({ [source]: level });
       await brain.consider('turn_done_big', context);
-      assert.equal(modelCalls(calls).length, level > 0.1 ? 1 : 0, `${source}: ${level}`);
-      assert.equal(said[0].ai, level > 0.1);
+      assert.equal(modelCalls(calls).length, level > 0.15 ? 1 : 0, `${source}: ${level}`);
+      assert.equal(said[0].ai, level > 0.15);
     }
   }
 });
@@ -205,4 +206,62 @@ test('model names resolve loosely, preferring the cheap variant', async () => {
   assert.equal(models.resolve('Gemini 3.8 Flash (High)').id, 'H');
   assert.equal(models.resolve('MODEL_RAW').id, 'MODEL_RAW');
   assert.equal(models.resolve('nonexistent'), null);
+});
+
+test('idle_ponder stays scripted and never calls the model', async () => {
+  const { brain, calls, said } = harness({ settings: { chattiness: 'chatty' } });
+  const result = await brain.consider('idle_ponder', context);
+  assert.equal(modelCalls(calls).length, 0);
+  assert.equal(result.ai, false);
+  assert.equal(said.length, 1);
+});
+
+test('real host focus check blocks AI calls when another app is active in desktop mode', async () => {
+  let hostActive = false;
+  let checks = 0;
+  const { brain, calls, advance } = harness({
+    isHostFocused: async () => { checks++; return hostActive; },
+  });
+  await brain.consider('turn_done_big', { ...context, title: 'first' });
+  assert.equal(checks, 1);
+  assert.equal(modelCalls(calls).length, 0, 'blocked when Antigravity is unfocused');
+
+  hostActive = true;
+  advance(10);
+  await brain.consider('turn_done_big', { ...context, title: 'second' });
+  assert.equal(checks, 2);
+  assert.equal(modelCalls(calls).length, 1, 'allowed once Antigravity is focused');
+});
+
+test('sameFamilySnippetsOnly withholds chat excerpts across different model vendors', async () => {
+  const cross = harness();
+  await cross.brain.consider('turn_error', {
+    ...context,
+    model: 'Claude Opus 5.5 (High)',
+    userText: 'CROSS_VENDOR_USER_SECRET',
+    agentText: 'CROSS_VENDOR_AGENT_SECRET',
+  });
+  const crossPrompt = modelCalls(cross.calls)[0].body.prompt;
+  assert.match(crossPrompt, /Chat title: Refactor/);
+  assert.ok(!crossPrompt.includes('CROSS_VENDOR_USER_SECRET'));
+  assert.ok(!crossPrompt.includes('CROSS_VENDOR_AGENT_SECRET'));
+
+  const same = harness();
+  await same.brain.consider('turn_error', {
+    ...context,
+    model: 'Gemini 4 Pro',
+    userText: 'SAME_FAMILY_USER_TEXT',
+    agentText: 'SAME_FAMILY_AGENT_TEXT',
+  });
+  const samePrompt = modelCalls(same.calls)[0].body.prompt;
+  assert.ok(samePrompt.includes('SAME_FAMILY_USER_TEXT'));
+  assert.ok(samePrompt.includes('SAME_FAMILY_AGENT_TEXT'));
+
+  const optedOut = harness({ settings: { ai: { sameFamilySnippetsOnly: false } } });
+  await optedOut.brain.consider('turn_error', {
+    ...context,
+    model: 'Claude Opus 5.5 (High)',
+    userText: 'OPT_OUT_USER_TEXT',
+  });
+  assert.ok(modelCalls(optedOut.calls)[0].body.prompt.includes('OPT_OUT_USER_TEXT'));
 });

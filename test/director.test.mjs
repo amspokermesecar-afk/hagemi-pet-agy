@@ -84,3 +84,7 @@ test('ambient nudges', () => {
 test('every reaction names a real salience', () => {
   for (const [name, reaction] of Object.entries(REACTIONS)) assert.ok(reaction.salience >= 0 && reaction.salience <= 1, name);
 });
+
+test('idle_ponder never requests AI model calls', () => {
+  assert.ok(!REACTIONS.idle_ponder.ai);
+});

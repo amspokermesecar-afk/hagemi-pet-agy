@@ -9,10 +9,12 @@ import { RendererBridge } from './lib/cdp.mjs';
 import { DesktopBridge } from './lib/desktop-bridge.mjs';
 import { DesktopHost } from './lib/desktop-host.mjs';
 import { ambientTriggers, chooseState, classifyTurnEnd, festival, isLate, modelFamily, REACTIONS, timeOfDay } from './lib/director.mjs';
+import { HostFocusChecker } from './lib/host-focus.mjs';
 import { fill, resolveLanguage, UI } from './lib/lines.mjs';
 import { LanguageServer } from './lib/ls-client.mjs';
 import { Monitor } from './lib/monitor.mjs';
 import { buildNotification } from './lib/notify.mjs';
+import { evaluateQuotaSchedule, shouldHoverRefreshQuota } from './lib/polling.mjs';
 import { formatDuration, isResetSoon, levelForModel, parseQuota, quotaEvents, quotaRows, summarize } from './lib/quota.mjs';
 import { readArt } from './lib/renderer-source.mjs';
 import { SettingsStore } from './lib/settings.mjs';
@@ -31,14 +33,19 @@ try { mkdirSync(dataDir, { recursive: true }); process.chdir(dataDir); } catch {
 
 const settings = new SettingsStore(join(dataDir, 'settings.json'));
 const budget = new Budget(join(dataDir, 'budget.json'));
-const ls = new LanguageServer();
+const ls = new LanguageServer({
+  onFatalDisconnect: error => {
+    log(`language server connection invalidated (${error.status || error.code || error.message}); exiting so host can restart with fresh token`);
+    shutdown();
+  },
+});
 const models = new ModelResolver(ls);
 
 let appLanguage = 'en';
 let facts = { running: 0, subagents: 0, category: null, idleMs: 0, quietMs: 0, connected: false };
 let quota = { level: null, mood: 'ok', buckets: [], resetInMs: null };
 let allBuckets = [];
-let presence = { visible: true, focused: true, idleMs: 0 };
+let presence = { visible: true, focused: true, locked: false, idleMs: 0, desktop: false };
 let selectedModel = null;
 let activeSince = null, lastToolAt = 0;
 let lastFactsJson = '', lastLoggedState = null, lastState = null;
@@ -87,6 +94,8 @@ function broadcastAll(message) {
 const updater = new Updater({
   root: pluginRoot,
   installedRoot: join(geminiDir, 'config', 'plugins', 'hagemi-pet-agy'),
+  stateFile: join(dataDir, 'last-good-sha.json'),
+  getCooldownHours: () => settings.value.updateCooldownHours,
   log,
   onChange: update => broadcastAll({ t: 'update', update }),
   onInstalled: () => {
@@ -96,11 +105,25 @@ const updater = new Updater({
   },
 });
 updater.local().then(local => updater.publish(local));
+const hostFocus = new HostFocusChecker({
+  getAllowedPids: () => [desktopHost.pid],
+});
+
+async function resolveHostFocus() {
+  if (!presence.visible) return false;
+  if (presence.desktop || (bridge.sessions.size === 0 && desktopHost.running)) {
+    const focused = await hostFocus.isFocused();
+    if (typeof focused === 'boolean') return focused;
+  }
+  return !!presence.focused;
+}
+
 const brain = new Brain({
   ls, budget, models, log,
   getSettings: () => settings.value,
   getLanguage: language,
   getPresence: () => presence,
+  isHostFocused: resolveHostFocus,
   // Comments are paid for by their own model, not by the one selected for the agent.
   getQuotaLevel: () => levelForModel(allBuckets, models.resolve(settings.value.ai.model)?.label || settings.value.ai.model),
   say: (result, trigger) => {
@@ -120,11 +143,16 @@ function hudRows() {
 
 const lastNotified = new Map();
 let recentWorkResult = null;
-function dispatchNotification(event) {
+async function dispatchNotification(event) {
+  const cfg = settings.value?.notifications || {};
+  let focused = presence.visible && presence.focused;
+  if (event?.type !== 'test' && cfg.enabled !== false && cfg.whenFocused === false) {
+    focused = await resolveHostFocus();
+  }
   const notification = buildNotification(event, {
     language: language(),
     settings: settings.value,
-    focused: presence.visible && presence.focused,
+    focused,
   });
   if (!notification) return false;
   if (event.type !== 'test') {
@@ -244,7 +272,8 @@ function onEvent(event) {
         until: Date.now() + 10000,
       };
       setTimeout(() => publishFacts(), 10500).unref?.();
-      dispatchNotification({ ...event, type: trigger, agentText: event.agentText });
+      schedulePostTurnQuotaRefresh();
+      dispatchNotification({ ...event, type: trigger, agentText: event.agentText }).catch(error => log(`notify failed: ${error.message}`));
       moment(trigger, {
         title: event.title, toolCount: event.toolCount, durationMin: Math.round((event.durationMs || 0) / MINUTE),
         userText: event.userText, agentText: event.agentText, vars: { count: event.toolCount || 0 },
@@ -252,7 +281,7 @@ function onEvent(event) {
       break;
     }
     case 'waiting_start':
-      dispatchNotification({ type: 'waiting_start', id: event.id, title: event.title });
+      dispatchNotification({ type: 'waiting_start', id: event.id, title: event.title }).catch(error => log(`notify failed: ${error.message}`));
       break;
     case 'tool':
       lastToolAt = Date.now();
@@ -283,6 +312,7 @@ function onEvent(event) {
 let previousRunning = 0, previousWaiting = false;
 const monitor = new Monitor({
   ls, brainDir: join(appDataDir, 'brain'), onEvent,
+  getPresence: () => presence,
   onFacts(next) {
     const now = Date.now();
     facts = { ...next, quietMs: lastToolAt ? now - lastToolAt : 0 };
@@ -303,19 +333,67 @@ monitor.onError = error => {
   facts = { ...facts, connected: false };
 };
 
+let lastQuotaPollAt = 0;
+let quotaPollInFlight = null;
+let quotaTimer = null;
+let turnQuotaTimer = null;
+
 async function pollQuota() {
-  try {
-    const response = await ls.call('RetrieveUserQuotaSummary');
-    const now = Date.now();
-    allBuckets = parseQuota(response, now);
-    const next = summarize(allBuckets, selectedModel?.label || 'gemini', quotaOptions(), now);
-    for (const event of quotaEvents(quota, next, quotaOptions())) {
-      if (event.type === 'quota_ok') continue;
-      moment(event.type, { vars: { left: event.type === 'reset_soon' ? formatDuration(event.resetInMs, language()) : `${Math.round(event.level * 100)}%` } });
-    }
-    quota = next;
-    publishFacts();
-  } catch (error) { log(`quota: ${error.message}`); }
+  if (quotaPollInFlight) return quotaPollInFlight;
+  quotaPollInFlight = (async () => {
+    try {
+      const response = await ls.call('RetrieveUserQuotaSummary');
+      const now = Date.now();
+      lastQuotaPollAt = now;
+      allBuckets = parseQuota(response, now);
+      const next = summarize(allBuckets, selectedModel?.label || 'gemini', quotaOptions(), now);
+      for (const event of quotaEvents(quota, next, quotaOptions())) {
+        if (event.type === 'quota_ok') continue;
+        moment(event.type, { vars: { left: event.type === 'reset_soon' ? formatDuration(event.resetInMs, language()) : `${Math.round(event.level * 100)}%` } });
+      }
+      quota = next;
+      publishFacts();
+    } catch (error) { log(`quota: ${error.message}`); }
+  })().finally(() => {
+    quotaPollInFlight = null;
+    scheduleQuotaCheck();
+  });
+  return quotaPollInFlight;
+}
+
+function scheduleQuotaCheck() {
+  clearTimeout(quotaTimer);
+  if (stopping) return;
+  const plan = evaluateQuotaSchedule({
+    now: Date.now(),
+    lastPollAt: lastQuotaPollAt,
+    resetInMs: quota.resetInMs,
+    idleMs: presence.idleMs,
+    locked: presence.locked,
+    visible: presence.visible,
+  });
+  quotaTimer = setTimeout(() => {
+    const check = evaluateQuotaSchedule({
+      now: Date.now(),
+      lastPollAt: lastQuotaPollAt,
+      resetInMs: quota.resetInMs,
+      idleMs: presence.idleMs,
+      locked: presence.locked,
+      visible: presence.visible,
+    });
+    if (check.shouldPoll) pollQuota();
+    else scheduleQuotaCheck();
+  }, plan.nextCheckMs);
+  quotaTimer.unref?.();
+}
+
+function schedulePostTurnQuotaRefresh() {
+  clearTimeout(turnQuotaTimer);
+  turnQuotaTimer = setTimeout(() => {
+    turnQuotaTimer = null;
+    pollQuota();
+  }, 2000);
+  turnQuotaTimer.unref?.();
 }
 
 // Which model the user has picked: she has opinions about the competition.
@@ -371,29 +449,51 @@ function onPetMessage(message, session) {
       sendTo(session, { t: 'update', update: updater.state });
       break;
     case 'update_check':
-      updater.check();
+      updater.check({ manual: message.manual !== false });
       break;
     case 'update_install':
       updater.install();
+      break;
+    case 'update_rollback':
+      updater.rollback();
       break;
     case 'art':
       sendTo(session, { t: 'art', name: message.name, data: readArt(message.name) });
       break;
     case 'settings': {
-      const before = settings.value.language;
+      const beforeLang = settings.value.language;
+      const beforeMode = settings.value.renderMode;
       settings.patch(message.patch);
-      if (settings.value.language !== before) broadcastAll({ t: 'settings', settings: settings.value, ui: ui() });
+      if (settings.value.language !== beforeLang) broadcastAll({ t: 'settings', settings: settings.value, ui: ui() });
+      if (settings.value.renderMode !== beforeMode) syncDesktopFallback();
       publishFacts();
       break;
     }
-    case 'presence':
-      presence = { visible: !!message.visible, focused: !!message.focused, idleMs: Number(message.idleMs) || 0 };
-      if (message.language) appLanguage = message.language;
+    case 'hud_hover':
+      monitor.wake();
+      if (shouldHoverRefreshQuota({ now: Date.now(), lastPollAt: lastQuotaPollAt })) pollQuota();
       break;
+    case 'presence': {
+      const wasLockedOrDeepIdle = presence.locked || presence.idleMs >= 2 * MINUTE;
+      presence = {
+        visible: !!message.visible,
+        focused: !!message.focused,
+        locked: !!message.locked,
+        idleMs: Number(message.idleMs) || 0,
+        desktop: !!message.desktop || !!session?.desktop,
+      };
+      if (message.language) appLanguage = message.language;
+      if (wasLockedOrDeepIdle && !presence.locked && presence.idleMs < 30000) {
+        monitor.wake();
+        scheduleQuotaCheck();
+      }
+      break;
+    }
     case 'remount':
       if (!session?.desktop) bridge.remount(session);
       break;
     case 'talk':
+      monitor.wake();
       brain.consider('talk', context(), { force: true, line: 'talk_offline' }).catch(() => {});
       break;
     case 'activity':
@@ -402,7 +502,7 @@ function onPetMessage(message, session) {
       }
       break;
     case 'notify_test':
-      dispatchNotification({ type: 'test', id: facts.primaryId || null, title: facts.title || '' });
+      dispatchNotification({ type: 'test', id: facts.primaryId || null, title: facts.title || '' }).catch(error => log(`notify failed: ${error.message}`));
       break;
     case 'focus_conversation':
       bridge.focusConversation(message.conversationId);
@@ -436,14 +536,16 @@ async function sendModelChoices(session) {
 
 let desktopQueue = Promise.resolve();
 function syncDesktopFallback() {
-  if (process.env.HAGEMI_NO_DESKTOP === '1' || stopping) return desktopQueue;
+  if (stopping) return desktopQueue;
   desktopQueue = desktopQueue.then(async () => {
     if (stopping) return;
-    if (bridge.sessions.size > 0) {
+    const mode = process.env.HAGEMI_NO_DESKTOP === '1' ? 'cdp' : (settings.value.renderMode || 'auto');
+    await bridge.setEnabled(mode !== 'desktop');
+    if (mode === 'cdp' || bridge.sessions.size > 0) {
       if (desktopHost.running || desktopBridge.server) {
         await desktopHost.stop();
         await desktopBridge.stop();
-        log('cdp connected, stopped desktop overlay');
+        log(mode === 'cdp' ? 'cdp-only mode, stopped desktop overlay' : 'cdp connected, stopped desktop overlay');
       }
       return;
     }
@@ -457,14 +559,18 @@ function syncDesktopFallback() {
   return desktopQueue;
 }
 
-const timers = [setInterval(pollQuota, 60000), setInterval(pollModel, 20000), setInterval(ambient, 5 * MINUTE)];
-const checkUpdates = () => { if (settings.value.autoCheckUpdates) updater.check(); };
+const timers = [setInterval(pollModel, 20000), setInterval(ambient, 5 * MINUTE)];
+const checkUpdates = () => { if (settings.value.autoCheckUpdates) updater.check({ manual: false }); };
 timers.push(setTimeout(checkUpdates, 15000), setInterval(checkUpdates, UPDATE_INTERVAL_MS));
 timers.push(setTimeout(syncDesktopFallback, 1500), setInterval(syncDesktopFallback, 10000));
 for (const timer of timers) timer.unref?.();
 pollModel().then(pollQuota);
 monitor.start();
-bridge.start();
+if ((process.env.HAGEMI_NO_DESKTOP === '1' ? 'cdp' : settings.value.renderMode) !== 'desktop') {
+  bridge.start();
+} else {
+  bridge.setEnabled(false);
+}
 log(`started, data in ${dataDir}`);
 
 // Keep the process alive even when every timer above is unreferenced.
@@ -475,6 +581,8 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   clearInterval(keepAlive);
+  clearTimeout(quotaTimer);
+  clearTimeout(turnQuotaTimer);
   monitor.stop();
   const force = setTimeout(() => process.exit(0), 2000);
   force.unref?.();

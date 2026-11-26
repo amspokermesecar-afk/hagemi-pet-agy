@@ -56,6 +56,10 @@ export class DesktopHost {
     return Boolean(this.child && !this.child.killed && this.child.exitCode === null);
   }
 
+  get pid() {
+    return this.running ? (this.child?.pid || 0) : 0;
+  }
+
   start(url) {
     if (this.running) return true;
     const exe = findElectronExecutable({ dataDir: this.dataDir, pluginRoot: this.pluginRoot });

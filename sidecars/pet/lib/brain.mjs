@@ -9,7 +9,7 @@ import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { pickLine } from './lines.mjs';
 import { buildPrompt, estimateTokens, parseReply, scrub } from './persona.mjs';
-import { CHATTINESS, REACTIONS } from './director.mjs';
+import { CHATTINESS, modelFamily, REACTIONS } from './director.mjs';
 
 const MINUTE = 60000, HOUR = 3600000;
 const FAILURE_BACKOFF_MS = [2, 5, 15, 30, 60].map(minutes => minutes * MINUTE);
@@ -88,8 +88,8 @@ export class ModelResolver {
 }
 
 export class Brain {
-  constructor({ ls, budget, models, getSettings, getLanguage, getPresence, getQuotaLevel, now = Date.now, random = Math.random, say, log = () => {} }) {
-    Object.assign(this, { ls, budget, models, getSettings, getLanguage, getPresence, getQuotaLevel, now, random, say, log });
+  constructor({ ls, budget, models, getSettings, getLanguage, getPresence, getQuotaLevel, isHostFocused = null, now = Date.now, random = Math.random, say, log = () => {} }) {
+    Object.assign(this, { ls, budget, models, getSettings, getLanguage, getPresence, getQuotaLevel, isHostFocused, now, random, say, log });
     this.lastTrigger = new Map();
     this.lastBubbleAt = 0;
     this.inFlight = false;
@@ -114,9 +114,13 @@ export class Brain {
     return null;
   }
 
-  describe(trigger, context, language) {
+  describe(trigger, context, language, commentModelLabel = '') {
     const zh = language === 'zhs';
     const { ai } = this.getSettings();
+    const convFamily = modelFamily(context.model || '');
+    const commentFamily = modelFamily(commentModelLabel || ai.model || '');
+    const crossVendor = ai.sameFamilySnippetsOnly !== false && convFamily !== 'other' && commentFamily !== 'other' && convFamily !== commentFamily;
+    const effectiveLevel = crossVendor && ai.contextLevel === 'snippets' ? 'titles' : ai.contextLevel;
     const situations = {
       turn_done_big: zh ? '一个大任务刚刚完成' : 'A big agent task just finished',
       turn_error: zh ? '代理任务刚刚出错结束' : 'An agent task just ended in an error',
@@ -142,8 +146,8 @@ export class Brain {
     if (context.durationMin) facts.push(`${zh ? '耗时（分钟）' : 'Duration (min)'}: ${context.durationMin}`);
     if (context.quotaPercent != null) facts.push(`${zh ? '额度剩余' : 'Quota left'}: ${context.quotaPercent}%`);
     if (context.model) facts.push(`${zh ? '用户选的模型' : 'Selected model'}: ${context.model}`);
-    if (ai.contextLevel !== 'minimal' && context.title) facts.push(`${zh ? '对话标题' : 'Chat title'}: ${scrub(context.title, 70)}`);
-    if (ai.contextLevel === 'snippets') {
+    if (effectiveLevel !== 'minimal' && context.title) facts.push(`${zh ? '对话标题' : 'Chat title'}: ${scrub(context.title, 70)}`);
+    if (effectiveLevel === 'snippets') {
       if (context.userText) facts.push(`${zh ? '用户说' : 'User said'}: ${scrub(context.userText, 200)}`);
       if (context.agentText) facts.push(`${zh ? '代理说' : 'Agent said'}: ${scrub(context.agentText, 1000)}`);
     }
@@ -156,7 +160,7 @@ export class Brain {
     const model = this.models.resolve(ai.model);
     if (!model) return null;
     if (model.remaining != null && model.remaining <= ai.pauseBelowQuota) return null;
-    const { situation, facts } = this.describe(trigger, context, language);
+    const { situation, facts } = this.describe(trigger, context, language, model.label || ai.model);
     const prompt = buildPrompt({ language, situation, facts, recent: this.recent.slice(-2), personaExtra: ai.personaExtra });
     const key = createHash('sha1').update(`${language}|${situation}|${facts.slice(1).join('|')}`).digest('hex');
     if (this.seen.has(key) && this.now() - this.seen.get(key) < 6 * HOUR) return null;
@@ -200,7 +204,11 @@ export class Brain {
     const canned = pickLine(language, scriptKey, context.vars);
     this.lastBubbleAt = now;
     let result = null;
-    const blocked = this.aiBlocked(trigger, reaction, force);
+    let blocked = this.aiBlocked(trigger, reaction, force);
+    if (!blocked && settings.ai.onlyWhenFocused && typeof this.isHostFocused === 'function') {
+      const hostFocused = await Promise.resolve(this.isHostFocused()).catch(() => null);
+      if (hostFocused === false) blocked = 'unfocused';
+    }
     if (!blocked) {
       const reply = await this.generate(trigger, context, language);
       if (reply) {

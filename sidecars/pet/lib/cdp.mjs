@@ -81,11 +81,14 @@ class Session {
 }
 
 export class RendererBridge {
-  constructor({ onMessage, log = () => {}, profile = profileDirectory(), interval = 3000 }) {
-    Object.assign(this, { onMessage, log, profile, interval });
+  constructor({ onMessage, log = () => {}, profile = profileDirectory(), interval = 3000, backoffInterval = 60000, backoffAfterMisses = 3 }) {
+    Object.assign(this, { onMessage, log, profile, interval, backoffInterval, backoffAfterMisses });
     this.sessions = new Map();
     this.source = rendererSource().source;
     this.health = { state: 'waiting', windows: 0 };
+    this.consecutiveMisses = 0;
+    this.enabled = true;
+    this.timer = null;
   }
 
   async targets() {
@@ -177,7 +180,7 @@ export class RendererBridge {
   }
 
   async tick() {
-    if (this.busy || this.stopped) return;
+    if (this.busy || this.stopped || !this.enabled) return;
     this.busy = true;
     try {
       const targets = await this.targets();
@@ -193,8 +196,11 @@ export class RendererBridge {
         if (session.closed) continue;
         if (!session.contextId) await this.mount(session);
       }
+      if (this.sessions.size > 0) this.consecutiveMisses = 0;
+      else this.consecutiveMisses++;
       this.health = { state: this.sessions.size ? 'mounted' : 'waiting', windows: this.sessions.size };
     } catch (error) {
+      this.consecutiveMisses++;
       if (this.health.state !== 'retrying') this.log(`renderer: ${error.message}`);
       this.health = { state: 'retrying', windows: this.sessions.size, message: error.message };
     } finally {
@@ -202,15 +208,52 @@ export class RendererBridge {
     }
   }
 
-  start() {
-    this.tick();
-    this.timer = setInterval(() => this.tick(), this.interval);
+  nextInterval() {
+    if (this.sessions.size > 0) return this.interval;
+    return this.consecutiveMisses >= this.backoffAfterMisses ? this.backoffInterval : this.interval;
+  }
+
+  scheduleNext() {
+    clearTimeout(this.timer);
+    if (this.stopped || !this.enabled) return;
+    this.timer = setTimeout(async () => {
+      await this.tick();
+      this.scheduleNext();
+    }, this.nextInterval());
     this.timer.unref?.();
+  }
+
+  start() {
+    this.stopped = false;
+    if (!this.enabled) return;
+    this.tick().finally(() => this.scheduleNext());
+  }
+
+  async setEnabled(enabled) {
+    const next = Boolean(enabled);
+    if (next === this.enabled) return;
+    this.enabled = next;
+    clearTimeout(this.timer);
+    this.timer = null;
+    if (!next) {
+      for (const session of this.sessions.values()) {
+        try {
+          await session.command('Runtime.evaluate', { expression: `window.__hagemiPet && window.__hagemiPet.dispose()`, contextId: session.contextId });
+        } catch { /* The window may already be gone. */ }
+        session.close();
+      }
+      this.sessions.clear();
+      this.health = { state: 'disabled', windows: 0 };
+      return;
+    }
+    this.consecutiveMisses = 0;
+    if (!this.stopped) this.start();
   }
 
   async stop() {
     this.stopped = true;
-    clearInterval(this.timer);
+    clearTimeout(this.timer);
+    this.timer = null;
     for (const session of this.sessions.values()) {
       try {
         // Same DOM across worlds, so removal works even if she is mid-animation.

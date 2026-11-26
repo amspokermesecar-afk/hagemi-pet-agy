@@ -4,6 +4,7 @@
 // loop. Reading from the side costs the agent nothing, so she can never slow it down.
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { nextMonitorDelayMs } from './polling.mjs';
 
 const TOOL_CATEGORY = new Map(Object.entries({
   read_file: 'reading', view_file: 'reading', view_file_outline: 'reading', view_code_item: 'reading', view_content_chunk: 'reading',
@@ -164,8 +165,8 @@ export class TranscriptTail {
 }
 
 export class Monitor {
-  constructor({ ls, brainDir, onEvent, onFacts, now = Date.now, tailFactory = (file, since) => new TranscriptTail(file, since) }) {
-    Object.assign(this, { ls, brainDir, onEvent, onFacts, now, tailFactory });
+  constructor({ ls, brainDir, onEvent, onFacts, getPresence = () => ({ idleMs: 0, locked: false }), now = Date.now, tailFactory = (file, since) => new TranscriptTail(file, since) }) {
+    Object.assign(this, { ls, brainDir, onEvent, onFacts, getPresence, now, tailFactory });
     this.conversations = null;
     this.tails = new Map();
     this.starts = new Map();
@@ -173,6 +174,7 @@ export class Monitor {
     this.categoryAt = 0;
     this.lastActivityAt = now();
     this.timer = null;
+    this.tickFn = null;
     this.healthy = false;
     this.bigContextWarned = new Set();
   }
@@ -275,18 +277,40 @@ export class Monitor {
   }
 
   start(intervalRunning = 2000, intervalIdle = 4000) {
+    this.stopped = false;
     const tick = async () => {
+      this.timer = null;
       let running = 0;
       try { running = await this.poll(); } catch (error) {
         this.healthy = false;
         this.onError?.(error);
       }
       if (this.stopped) return;
-      this.timer = setTimeout(tick, running ? intervalRunning : intervalIdle);
+      const presence = this.getPresence?.() || {};
+      const activityIdleMs = Math.max(0, this.now() - this.lastActivityAt);
+      const userIdleMs = Number.isFinite(presence.idleMs) ? Math.max(0, presence.idleMs) : 0;
+      const effectiveIdleMs = running ? 0 : Math.min(activityIdleMs, userIdleMs || activityIdleMs);
+      const delay = nextMonitorDelayMs({
+        running,
+        idleMs: presence.locked ? Math.max(effectiveIdleMs, userIdleMs) : effectiveIdleMs,
+        locked: !!presence.locked,
+        intervalRunning,
+        intervalIdle,
+      });
+      this.timer = setTimeout(tick, delay);
       this.timer.unref?.();
     };
+    this.tickFn = tick;
     tick();
   }
 
-  stop() { this.stopped = true; clearTimeout(this.timer); }
+  wake() {
+    this.lastActivityAt = this.now();
+    if (this.stopped || !this.tickFn || !this.timer) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(this.tickFn, 250);
+    this.timer.unref?.();
+  }
+
+  stop() { this.stopped = true; clearTimeout(this.timer); this.timer = null; }
 }

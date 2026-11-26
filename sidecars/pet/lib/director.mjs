@@ -50,7 +50,8 @@ export const REACTIONS = {
   long_session: { salience: 0.46, cooldownMin: 120, ai: true, react: { state: 'stretch', ms: 2800 } },
   friday: { salience: 0.46, cooldownMin: 1440, ai: true, react: { gesture: 'hop' } },
   wake: { salience: 0.2, cooldownMin: 20, react: { state: 'yawn', ms: 2400 } },
-  idle_ponder: { salience: 0.36, cooldownMin: 25, ai: true, react: { gesture: 'lookAround' } },
+  // Keep idle chatter scripted so she never sends unattended background model requests.
+  idle_ponder: { salience: 0.36, cooldownMin: 25, react: { gesture: 'lookAround' } },
   greet: { salience: 1, cooldownMin: 0, urgent: true, react: { gesture: 'hop', burst: 'sparkles' } },
   poke: { salience: 0.9, cooldownMin: 0.05, urgent: true },
   annoyed: { salience: 0.9, cooldownMin: 0.1, urgent: true },

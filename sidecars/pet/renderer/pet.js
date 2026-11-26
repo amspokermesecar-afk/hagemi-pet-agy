@@ -47,12 +47,14 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const animator = HAGEMI.createAnimator(fx);
 
   let settings = {
-    language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced',
-    followCursor: true, roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
+    language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced', renderMode: 'auto',
+    followCursor: true, desktopDisplay: 'primary', alwaysOnTopLevel: 'floating',
+    roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
     notifications: { enabled: true, onDone: true, onWaiting: true, whenFocused: true }, position: null,
   };
   let ui = {};
   let updateState = { phase: 'idle' }, updateCard = null;
+  let desktopDisplays = [];
   let hudRows = [];
   let workBadge = null, baseState = 'idle', facing = 1, roam = null, lastPlayId = null;
   let nextAutoAt = performance.now() + rand(5000, 9000);
@@ -60,7 +62,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   let x = 0, y = 0, vx = 0, vy = 0;
   let dragging = null;
   let lastOverPet = false, lastOverBubble = false, lastOverPanel = false, lastOverWork = false, lastInteractive = null;
-  let desktopIdleSec = 0;
+  let desktopIdleSec = 0, desktopLocked = false;
   const abort = new AbortController();
   const listen = (target, type, handler, extra = {}) => target.addEventListener(type, handler, { signal: abort.signal, ...extra });
 
@@ -273,7 +275,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     hud.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }
   let hoverTimer = 0;
-  function showHud() { if (hudRows.length && !dragging && !menu.classList.contains('show') && !panel.classList.contains('show')) { renderHud(); hud.classList.add('show'); placeHud(); animator.setMood({ showStash: true }); syncWorkPill(); } }
+  function showHud() { if (hudRows.length && !dragging && !menu.classList.contains('show') && !panel.classList.contains('show')) { send({ type: 'hud_hover' }); renderHud(); hud.classList.add('show'); placeHud(); animator.setMood({ showStash: true }); syncWorkPill(); } }
   function hideHud() { hud.classList.remove('show'); animator.setMood({ showStash: false }); syncWorkPill(); }
 
   function pointInVisible(el, cx, cy) {
@@ -417,7 +419,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     item(ui.work_status_enabled || 'Work status linkage', () => patch({ workStatusEnabled: !settings.workStatusEnabled }), settings.workStatusEnabled !== false);
     item(ui.notify_enabled || 'System notifications', () => patch({ notifications: { enabled: !(settings.notifications?.enabled !== false) } }), settings.notifications?.enabled !== false);
     item(ui.settings || 'Settings…', () => openPanel());
-    item((updateState.phase === 'available' ? ui.update_available_menu : ui.update_menu) || '🐾 Check for updates…', () => { openPanel(); if (updateState.phase === 'idle') send({ type: 'update_check' }); });
+    item((updateState.phase === 'available' ? ui.update_available_menu : ui.update_menu) || '🐾 Check for updates…', () => { openPanel(); if (updateState.phase === 'idle' || updateState.phase === 'cooling') send({ type: 'update_check', manual: true }); });
     item(ui.hide || 'Hide for 1 hour', () => patch({ hiddenUntil: Date.now() + 3600000 }));
     menu.classList.add('show');
     const width = menu.offsetWidth, height = menu.offsetHeight;
@@ -449,14 +451,51 @@ HAGEMI.boot = async function boot(send, options = {}) {
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     status.textContent = ui[`update_status_${updateState.phase}`] || ui.update_status_idle;
-    if (['available', 'manual'].includes(updateState.phase) && updateState.latestSha) status.textContent += ` (${updateState.latestSha.slice(0, 7)})`;
+    if (['available', 'manual', 'cooling'].includes(updateState.phase) && updateState.latestSha) status.textContent += ` (${updateState.latestSha.slice(0, 7)})`;
+    if (['available', 'cooling'].includes(updateState.phase)) {
+      if (updateState.summary) {
+        const meta = make('div', 'update-meta', updateCard);
+        const countPrefix = updateState.commitCount > 1 ? `[+${updateState.commitCount}] ` : '';
+        meta.textContent = `${countPrefix}${updateState.summary}`;
+      }
+      if (updateState.totalFiles > 0 || updateState.sensitiveFiles?.length) {
+        const risk = make('div', 'update-risk', updateCard);
+        const high = updateState.riskLevel === 'high' && updateState.sensitiveFiles?.length;
+        risk.dataset.level = high ? 'high' : 'low';
+        if (high) {
+          const preview = updateState.sensitiveFiles.slice(0, 3).join(', ') + (updateState.sensitiveFiles.length > 3 ? '…' : '');
+          risk.textContent = (ui.update_risk_high || 'Sensitive files changed ({files}).').replace('{files}', preview);
+        } else {
+          risk.textContent = (ui.update_risk_low || '{count} file(s) changed.').replace('{count}', String(updateState.totalFiles || 0));
+        }
+      }
+      if (updateState.inCooldown && updateState.phase === 'available') {
+        make('div', 'panel-note update-reason', updateCard).textContent = (ui.update_cooldown_note || 'Published within cooldown ({hours}h remaining).').replace('{hours}', String(updateState.cooldownRemainingHours || 1));
+      }
+      if (updateState.compareUrl) {
+        const links = make('div', 'update-links', updateCard);
+        const diffLink = make('a', 'panel-link', links);
+        diffLink.href = updateState.compareUrl;
+        diffLink.target = '_blank';
+        diffLink.rel = 'noopener noreferrer';
+        diffLink.textContent = ui.update_diff_link || 'View diff on GitHub';
+        const sig = make('span', 'panel-note', links);
+        sig.textContent = updateState.verified ? (ui.update_signed || 'Verified signature') : (ui.update_unsigned || 'Unsigned commit');
+      }
+    }
     if (updateState.reason) make('div', 'panel-note update-reason', updateCard).textContent = ui[`update_reason_${updateState.reason}`] || '';
     const button = make('button', 'update-button', updateCard);
     button.type = 'button';
     const install = updateState.phase === 'available' && updateState.canInstall;
     button.textContent = install ? ui.update_install : updateState.phase === 'checking' ? ui.update_checking : updateState.phase === 'installing' ? ui.update_installing : updateState.phase === 'installed' ? ui.update_installed : ui.update_check;
     button.disabled = ['checking', 'installing', 'installed'].includes(updateState.phase);
-    button.addEventListener('click', () => send({ type: install ? 'update_install' : 'update_check' }));
+    button.addEventListener('click', () => send(install ? { type: 'update_install' } : { type: 'update_check', manual: true }));
+    if (updateState.canRollback && updateState.rollbackSha && !['checking', 'installing', 'installed'].includes(updateState.phase)) {
+      const rb = make('button', 'update-rollback', updateCard);
+      rb.type = 'button';
+      rb.textContent = (ui.update_rollback || '↩️ Roll back to {sha}').replace('{sha}', updateState.rollbackSha.slice(0, 7));
+      rb.addEventListener('click', () => send({ type: 'update_rollback' }));
+    }
   }
   function openPanel() {
     panel.replaceChildren();
@@ -510,11 +549,29 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.language || 'Language', select(s.language, [['auto', ui.language_auto], ['en', ui.language_en], ['zhs', ui.language_zhs]], value => patch({ language: value })));
     field(ui.size || 'Size', select(s.size, [['xs', ui.size_xs], ['s', ui.size_s], ['m', ui.size_m], ['l', ui.size_l], ['xl', ui.size_xl]], value => patch({ size: value })));
     field(ui.animation || 'Animation', select(s.animation, [['smooth', ui.animation_smooth], ['balanced', ui.animation_balanced], ['saver', ui.animation_saver]], value => patch({ animation: value })));
+    field(ui.renderMode || 'Display mode', select(s.renderMode || 'auto', [['auto', ui.renderMode_auto || 'Auto'], ['desktop', ui.renderMode_desktop || 'Desktop overlay only'], ['cdp', ui.renderMode_cdp || 'App window only (CDP)']], value => patch({ renderMode: value })));
     field(ui.chattiness || 'Chattiness', select(s.chattiness, [['quiet', ui.chattiness_quiet], ['normal', ui.chattiness_normal], ['chatty', ui.chattiness_chatty]], value => patch({ chattiness: value })));
     field(ui.followCursor || 'Watch the cursor', check(s.followCursor, value => patch({ followCursor: value })));
+    if (options.desktop) {
+      const displayChoices = [
+        ['primary', ui.desktopDisplay_primary || 'Primary monitor'],
+        ['cursor', ui.desktopDisplay_cursor || 'Follow cursor monitor'],
+        ...desktopDisplays.map(d => [
+          d.id,
+          (ui.desktopDisplay_item || 'Monitor {index} ({size})').replace('{index}', String(d.index)).replace('{size}', `${d.width}x${d.height}`),
+        ]),
+      ];
+      field(ui.desktopDisplay || 'Monitor (desktop overlay)', select(s.desktopDisplay || 'primary', displayChoices, value => patch({ desktopDisplay: value })));
+      field(ui.alwaysOnTopLevel || 'Always-on-top level', select(s.alwaysOnTopLevel || 'floating', [
+        ['floating', ui.level_floating || 'Floating (recommended)'],
+        ['normal', ui.level_normal || 'Normal'],
+        ['screen-saver', ui.level_screen_saver || 'Topmost (over fullscreen)'],
+      ], value => patch({ alwaysOnTopLevel: value })));
+    }
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
     field(ui.work_status_enabled || 'Work status linkage', check(s.workStatusEnabled !== false, value => patch({ workStatusEnabled: value })));
     field(ui.autoCheckUpdates, check(s.autoCheckUpdates, value => patch({ autoCheckUpdates: value })));
+    field(ui.updateCooldownHours || 'Auto-update cooldown (hours)', number(s.updateCooldownHours ?? 24, 0, 168, value => patch({ updateCooldownHours: value })));
     field(ui.quotaHoverDelayMs || 'Quota hover delay (ms, 0 = instant)', number(s.quotaHoverDelayMs, 0, 10000, value => patch({ quotaHoverDelayMs: value })));
     field(ui.mute || 'Mute comments', check(s.muted, value => patch({ muted: value })));
     const notif = s.notifications || {};
@@ -534,6 +591,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     const choices = [...new Set([ai.model, ...modelChoices])].filter(Boolean).map(label => [label, label]);
     field(ui.ai_model || 'Model', select(ai.model, choices, value => patch({ ai: { model: value } })));
     field(ui.ai_contextLevel || 'What she can see', select(ai.contextLevel, [['minimal', ui.context_minimal], ['titles', ui.context_titles], ['snippets', ui.context_snippets]], value => patch({ ai: { contextLevel: value } })));
+    field(ui.ai_sameFamilySnippetsOnly || 'Keep excerpts within same model family', check(ai.sameFamilySnippetsOnly !== false, value => patch({ ai: { sameFamilySnippetsOnly: value } })));
     field(ui.ai_minIntervalMin || 'Minutes between', number(ai.minIntervalMin, 1, 1440, value => patch({ ai: { minIntervalMin: value } })));
     field(ui.ai_maxPerHour || 'Max per hour', number(ai.maxPerHour, 0, 60, value => patch({ ai: { maxPerHour: value } })));
     field(ui.ai_maxPerDay || 'Max per day', number(ai.maxPerDay, 0, 500, value => patch({ ai: { maxPerDay: value } })));
@@ -585,9 +643,34 @@ HAGEMI.boot = async function boot(send, options = {}) {
     syncWorkPill();
     send({ type: 'settings', patch: change });
   }
+  let lastCursorTrackKey = '';
+  function syncCursorTracking(hidden) {
+    if (!options.desktop) return;
+    const followCursor = settings.followCursor !== false;
+    const key = `${followCursor ? 1 : 0}:${hidden ? 1 : 0}`;
+    if (key === lastCursorTrackKey) return;
+    lastCursorTrackKey = key;
+    window.__hagemiDesktop?.setCursorTracking?.({ followCursor, hidden: !!hidden });
+  }
+  function syncDesktopWindowPrefs() {
+    if (!options.desktop) return;
+    window.__hagemiDesktop?.setWindowPrefs?.({
+      display: settings.desktopDisplay || 'primary',
+      level: settings.alwaysOnTopLevel || 'floating',
+    });
+  }
+  function refreshDisplays() {
+    if (!options.desktop || !window.__hagemiDesktop?.listDisplays) return;
+    window.__hagemiDesktop.listDisplays().then(list => {
+      if (Array.isArray(list)) desktopDisplays = list;
+    }).catch(() => {});
+  }
+  refreshDisplays();
   function applyVisibility() {
+    syncDesktopWindowPrefs();
     const hidden = settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
     stage.style.display = hidden ? 'none' : 'block';
+    syncCursorTracking(hidden);
     if (hidden) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); syncWorkPill(); syncDesktopHit(false, false, false, false); }
     else { syncWorkPill(); syncDesktopHit(); }
   }
@@ -745,7 +828,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   }, { passive: true, capture: true });
   // Only the time of the keystroke is ever used; the key itself is never read.
   listen(window, 'keydown', () => { lastKeyAt = performance.now(); }, { passive: true, capture: true });
-  listen(window, 'resize', () => { applySize(); settle(); }, { passive: true });
+  listen(window, 'resize', () => { applySize(); settle(); refreshDisplays(); }, { passive: true });
 
   if (options.desktop) {
     listen(document, 'pointerleave', () => { if (!dragging) syncDesktopHit(false, false, false, false); });
@@ -761,17 +844,25 @@ HAGEMI.boot = async function boot(send, options = {}) {
 
   // Tell the sidecar when nobody is looking, so she does not spend tokens on an empty room.
   const pollDesktopIdle = async () => {
-    if (!options.desktop || !window.__hagemiDesktop?.getIdleSec) return;
+    if (!options.desktop) return;
     try {
-      const sec = await window.__hagemiDesktop.getIdleSec();
-      if (Number.isFinite(sec) && sec >= 0) desktopIdleSec = sec;
+      if (window.__hagemiDesktop?.getIdleState) {
+        const info = await window.__hagemiDesktop.getIdleState();
+        if (Number.isFinite(info?.idleSec) && info.idleSec >= 0) desktopIdleSec = info.idleSec;
+        desktopLocked = !!info?.locked;
+        return;
+      }
+      if (window.__hagemiDesktop?.getIdleSec) {
+        const sec = await window.__hagemiDesktop.getIdleSec();
+        if (Number.isFinite(sec) && sec >= 0) desktopIdleSec = sec;
+      }
     } catch { /* Ignore IPC failure. */ }
   };
   const presence = () => {
     const localIdleMs = Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt));
     const idleMs = options.desktop ? Math.min(localIdleMs, Math.round(desktopIdleSec * 1000)) : localIdleMs;
-    const focused = options.desktop ? (!document.hidden && desktopIdleSec < 300) : document.hasFocus();
-    send({ type: 'presence', visible: !document.hidden, focused, idleMs, language: navigator.language });
+    const focused = options.desktop ? (!document.hidden && !desktopLocked && desktopIdleSec < 300) : document.hasFocus();
+    send({ type: 'presence', desktop: Boolean(options.desktop), visible: !document.hidden && !desktopLocked, focused, locked: desktopLocked, idleMs, language: navigator.language });
   };
   listen(document, 'visibilitychange', presence);
   listen(window, 'focus', presence);
@@ -796,10 +887,11 @@ HAGEMI.boot = async function boot(send, options = {}) {
   function frame(now) {
     raf = requestAnimationFrame(frame);
     if (!host.isConnected) { dispose(); return; }
-    if (document.hidden || stage.style.display === 'none') { lastFrame = now; return; }
+    if (document.hidden || stage.style.display === 'none' || desktopLocked) { lastFrame = now; return; }
     const gazeMoving = Math.abs(gazeX - gazeGoalX) > 0.015 || Math.abs(gazeY - gazeGoalY) > 0.015;
     const lively = animator.busy || dragging || roam || Math.hypot(vx, vy) > 3 || speech || fade < 1 || gazeMoving;
-    const fpsCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 0 : 30;
+    const baseCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 0 : 30;
+    const fpsCap = !lively && animator.state === 'sleeping' ? 12 : baseCap;
     if (fpsCap && now - lastFrame < 1000 / fpsCap - 2) return;
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;
