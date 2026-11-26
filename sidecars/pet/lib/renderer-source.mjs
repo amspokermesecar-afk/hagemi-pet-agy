@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RENDERER = join(HERE, '..', 'renderer');
 export const ART_DIR = join(HERE, '..', 'art');
-const FILES = ['util.js', 'styles.js', 'rig.js', 'fx.js', 'behavior.js', 'pet.js'];
+const FILES = ['util.js', 'styles.js', 'rig.js', 'fx.js', 'behavior.js', 'activity.js', 'pet.js'];
 
 export const BINDING = '__hagemiCall';
 
-export function rendererSource({ standalone = false } = {}) {
+export function rendererSource({ standalone = false, desktop = false } = {}) {
   const rigData = readFileSync(join(ART_DIR, 'rig.json'), 'utf8');
   const body = FILES.map(file => readFileSync(join(RENDERER, file), 'utf8')).join('\n');
   const version = createHash('sha256').update(body + rigData).digest('hex').slice(0, 16);
@@ -23,13 +23,13 @@ export function rendererSource({ standalone = false } = {}) {
     const HAGEMI = { rigData: ${rigData} };
 ${body}
     const send = message => { try { window.${BINDING}(JSON.stringify(message)); } catch {} };
-    window.__hagemiPet = await HAGEMI.boot(send, { standalone: ${standalone} });
+    window.__hagemiPet = await HAGEMI.boot(send, { standalone: ${Boolean(standalone)}, desktop: ${Boolean(desktop)} });
   })().catch(error => { try { window.${BINDING}(JSON.stringify({ type: 'error', message: String(error && error.stack || error).slice(0, 800) })); } catch {} });`;
   return { source, version };
 }
 
 // Art is requested by name from the renderer, so the name is untrusted input.
-const ART_NAME = /^(?:(?:blink|tail|under|cut)\/)?[a-z0-9_-]{1,32}$/;
+const ART_NAME = /^(?:(?:blink|tail|under|cut|limbs)\/)?[a-z0-9_-]{1,32}$/;
 export function readArt(name) {
   if (typeof name !== 'string' || !ART_NAME.test(name)) return null;
   try {

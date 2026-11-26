@@ -17,6 +17,8 @@ This project is inspired by [CrossPet](https://github.com/lokicorvus/crosspet), 
 code is under the MIT License and whose artwork is under CC BY-NC-SA 4.0. No CrossPet code is copied here; its pose set and its
 mapping of agent tools to poses informed the design.
 
+Fork enhancements (`Lihyuu/hagemi-pet-agy`) build on [KCFindstr/hagemi-pet-agy](https://github.com/KCFindstr/hagemi-pet-agy), and autonomous activity cycles, walking locomotion concepts, and clickable notifications were inspired by [dsh-pet](https://github.com/PC2005-cloud/dsh-pet).
+
 ## Art credits
 
 The pose illustrations come unchanged from the Gemini character in
@@ -33,6 +35,8 @@ inpainting model ([Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX), Apa
 [Animagine XL 4.0](https://huggingface.co/cagliostrolab/animagine-xl-4.0) (CreativeML Open RAIL++-M). Neither model is distributed here.
 Leftover white background in gaps around the tail is removed. `docs/poses.webp` is a
 contact sheet of the poses. They carry the same license.
+
+**Fork adaptations (`Lihyuu/hagemi-pet-agy`):** non-commercial character walking sprite adaptations (`sidecars/pet/art/walk_1.webp`, `blink/walk_1.webp`, `tail/walk_1.webp`, `under/walk_1.webp`, `cut/walk_1.webp`) and articulated 3/4 leg puppet cutouts (`sidecars/pet/art/limbs/walk_1_leg_*.webp`) are derived from the original character design in [KCFindstr/hagemi-pet-agy](https://github.com/KCFindstr/hagemi-pet-agy) and distributed under the same [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) license.
 
 If you are an original author and object to any of this, please open an issue and it will be changed or removed.
 

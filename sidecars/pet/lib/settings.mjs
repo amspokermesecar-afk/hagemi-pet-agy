@@ -7,6 +7,8 @@ export const DEFAULTS = Object.freeze({
   size: 'm',
   animation: 'balanced',
   followCursor: true,
+  roamEnabled: true,
+  workStatusEnabled: true,
   autoCheckUpdates: true,
   quotaHoverDelayMs: 650,
   hidden: false,
@@ -15,6 +17,12 @@ export const DEFAULTS = Object.freeze({
   chattiness: 'normal',
   position: null,
   quota: Object.freeze({ lowAt: 0.25, criticalAt: 0.1, resetSoonMin: 20 }),
+  notifications: Object.freeze({
+    enabled: true,
+    onDone: true,
+    onWaiting: true,
+    whenFocused: true,
+  }),
   ai: Object.freeze({
     enabled: true,
     model: 'Gemini 3.8 Flash (Low)',
@@ -61,13 +69,15 @@ function changedFrom(defaults, value) {
 }
 
 export function sanitize(input = {}, base = DEFAULTS) {
-  const quota = input.quota || {}, ai = input.ai || {};
+  const quota = input.quota || {}, ai = input.ai || {}, notifications = input.notifications || {};
   const position = input.position;
   return {
     language: oneOf(input.language, ['auto', 'en', 'zhs'], base.language),
     size: oneOf(input.size, ['xs', 's', 'm', 'l', 'xl'], base.size),
     animation: oneOf(input.animation, ['smooth', 'balanced', 'saver'], base.animation),
     followCursor: bool(input.followCursor, base.followCursor),
+    roamEnabled: bool(input.roamEnabled, base.roamEnabled),
+    workStatusEnabled: bool(input.workStatusEnabled, base.workStatusEnabled),
     autoCheckUpdates: bool(input.autoCheckUpdates, base.autoCheckUpdates),
     quotaHoverDelayMs: Math.round(number(input.quotaHoverDelayMs, 0, 10000, base.quotaHoverDelayMs)),
     hidden: bool(input.hidden, base.hidden),
@@ -80,6 +90,12 @@ export function sanitize(input = {}, base = DEFAULTS) {
       lowAt: number(quota.lowAt, 0.01, 0.9, base.quota.lowAt),
       criticalAt: number(quota.criticalAt, 0.005, 0.5, base.quota.criticalAt),
       resetSoonMin: number(quota.resetSoonMin, 1, 180, base.quota.resetSoonMin),
+    },
+    notifications: {
+      enabled: bool(notifications.enabled, base.notifications.enabled),
+      onDone: bool(notifications.onDone, base.notifications.onDone),
+      onWaiting: bool(notifications.onWaiting, base.notifications.onWaiting),
+      whenFocused: bool(notifications.whenFocused, base.notifications.whenFocused),
     },
     ai: {
       enabled: bool(ai.enabled, base.ai.enabled),
@@ -105,7 +121,13 @@ export class SettingsStore {
   }
 
   patch(change = {}) {
-    const merged = { ...this.value, ...change, quota: { ...this.value.quota, ...change.quota }, ai: { ...this.value.ai, ...change.ai } };
+    const merged = {
+      ...this.value,
+      ...change,
+      quota: { ...this.value.quota, ...change.quota },
+      notifications: { ...this.value.notifications, ...change.notifications },
+      ai: { ...this.value.ai, ...change.ai },
+    };
     this.value = sanitize(merged, this.value);
     this.save();
     return this.value;

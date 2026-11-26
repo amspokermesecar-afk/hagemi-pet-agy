@@ -80,4 +80,25 @@ HAGEMI.css = `
 .update-button:hover:not(:disabled) { background: #e3cefc; }
 .update-button:focus-visible { outline: 2px solid #8b5cf6; outline-offset: 2px; }
 .update-button:disabled { cursor: default; opacity: .7; }
+.panel-action {
+  width: 100%; margin-top: 6px; border: 1px solid #c4b5fd; border-radius: 10px; padding: 6px 10px;
+  background: #f5f0ff; color: #58308e; font: inherit; font-weight: 600; cursor: pointer;
+}
+.panel-action:hover { background: #ede5ff; }
+.work-pill {
+  position: fixed; left: 0; top: 0; max-width: 224px; padding: 4px 10px; display: none;
+  align-items: center; gap: 6px; border-radius: 999px; border: 1px solid rgba(167, 139, 250, 0.72);
+  background: rgba(34, 25, 62, 0.9); color: #f3eeff; box-shadow: 0 5px 16px rgba(16, 8, 42, 0.35);
+  font: 600 11px/1.3 "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  pointer-events: auto; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.work-pill.show { display: inline-flex; }
+.work-pill:hover { background: rgba(48, 36, 86, 0.96); border-color: #c4b5fd; }
+.work-pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #a78bfa; flex: 0 0 auto; }
+.work-pill[data-tone="waiting"] { border-color: #fbbf24; background: rgba(58, 36, 12, 0.92); color: #fef3c7; }
+.work-pill[data-tone="waiting"]::before { background: #fbbf24; }
+.work-pill[data-tone="done"] { border-color: #34d399; background: rgba(14, 48, 38, 0.92); color: #d1fae5; }
+.work-pill[data-tone="done"]::before { background: #34d399; }
+.work-pill[data-tone="error"] { border-color: #fb7185; background: rgba(62, 16, 30, 0.92); color: #ffe4e6; }
+.work-pill[data-tone="error"]::before { background: #fb7185; }
 `;

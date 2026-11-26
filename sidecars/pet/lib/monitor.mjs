@@ -65,10 +65,14 @@ export function diffConversations(previous, next, now) {
     if (current.parentId) {
       if (!wasRunning && isRunning) events.push({ type: 'subagent_start', id, parentId: current.parentId });
       if (wasRunning && !isRunning) events.push({ type: 'subagent_done', id, parentId: current.parentId, termination: current.termination });
+      if (!before?.waiting && current.waiting && isRunning) {
+        events.push({ type: 'waiting_start', id: current.parentId, subagentId: id, title: next.get(current.parentId)?.title || current.title });
+      }
       continue;
     }
     if (!wasRunning && isRunning) events.push({ type: 'turn_start', id, title: current.title, fresh: !before });
     if (wasRunning && !isRunning) events.push({ type: 'turn_end', id, title: current.title, termination: current.termination, steps: current.steps - (before?.steps || 0) });
+    if (!before?.waiting && current.waiting && isRunning) events.push({ type: 'waiting_start', id, title: current.title });
     if (before && current.userInputAt > before.userInputAt && now - current.userInputAt < 60000) events.push({ type: 'user_input', id, title: current.title });
   }
   return events;
@@ -244,6 +248,8 @@ export class Monitor {
     const subagents = all.filter(c => c.status === 'running' && c.parentId);
     if (!roots.length && !subagents.length) this.category = null;
     const primary = roots.slice().sort((a, b) => b.modifiedAt - a.modifiedAt)[0];
+    const waitingConv = roots.find(c => c.waiting) || all.find(c => c.status === 'running' && c.waiting) || null;
+    const waitingParent = waitingConv?.parentId ? conversations?.get(waitingConv.parentId) : null;
     const tail = primary && this.tails.get(primary.id);
     const longestRun = roots.reduce((longest, c) => Math.max(longest, now - (this.starts.get(c.id) || now)), 0);
     // Quiet tail while a turn is live: the model is thinking rather than using a tool.
@@ -252,6 +258,9 @@ export class Monitor {
       waiting: all.some(c => c.status === 'running' && c.waiting),
       running: roots.length,
       subagents: subagents.length,
+      primaryId: primary?.id || null,
+      waitingId: waitingConv ? (waitingConv.parentId || waitingConv.id) : null,
+      waitingTitle: waitingConv ? (waitingParent?.title || waitingConv.title || '') : '',
       title: primary?.title || '',
       category: stale && this.category !== 'delegating' ? null : this.category,
       lastTool: tail?.lastTool || null,

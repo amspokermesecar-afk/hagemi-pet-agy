@@ -4,6 +4,7 @@ HAGEMI.REST = {
   rot: 0, squash: 0, bob: 0, shiftX: 0, shiftY: 0, lean: 0, head: 0, nod: 0, lookX: 0, lookY: 0,
   earL: 0, earR: 0, ahoge: 0, hairSwayL: 0, hairSwayR: 0, hairWave: 2.2, hairLift: 0.2,
   tailBase: 0, tailAmp: 0.1, tailFreq: 0.55, tailSpring: 0, kick: 0, skirt: 0, breath: 1, opacity: 1,
+  walkPhase: 0, walkWeight: 0, walkAmp: 0.38,
 };
 
 // `pose` is a name, or a list to rotate through every `swap` seconds.
@@ -45,6 +46,15 @@ HAGEMI.STATES = {
   yawn: { pose: 'yawn', tailAmp: 0.06, tailFreq: 0.3, float: 0.2 },
   gift: { pose: 'update', tailAmp: 0.34, tailFreq: 1.4, float: 0.45, bounce: 8, bounceRate: 2.4 },
   bye: { pose: 'bye', tailAmp: 0.2, float: 0.3 },
+  roamStroll: { pose: 'walk_1', walkCycle: true, walkCadence: 1.45, walkAmp: 0.38, stepBounce: 8, stepLean: 0.06, tailAmp: 0.30, tailFreq: 1.35, float: 0.02, hairLift: 0.16, hairWave: 2.3, noFidget: true },
+  roamTrot: { pose: 'walk_1', walkCycle: true, walkCadence: 2.15, walkAmp: 0.48, stepBounce: 13, stepLean: 0.11, tailAmp: 0.44, tailFreq: 2.1, float: 0.02, hairLift: 0.30, hairWave: 3.3, noFidget: true },
+  roamFloat: { pose: 'float', tailAmp: 0.24, tailFreq: 0.8, float: 1.0, hairLift: 0.42, hairWave: 3.6, kick: 3.6, rot: -0.05, noFidget: true },
+  playSing: { pose: 'hum', tailAmp: 0.26, tailFreq: 0.85, float: 0.5, nodRate: 1.0, nodSize: 2.8, sway: 0.035, noFidget: true },
+  playFloat: { pose: 'float', tailAmp: 0.2, tailFreq: 0.55, float: 1.0, hairLift: 0.38, hairWave: 3.6, kick: 2.8, rot: -0.05, noFidget: true },
+  playDance: { pose: 'happy', tailAmp: 0.42, tailFreq: 1.7, float: 0.45, bounce: 8, bounceRate: 2.8, sway: 0.05, nodRate: 1.2, nodSize: 2.0, noFidget: true },
+  playHop: { pose: 'proud', tailAmp: 0.38, tailFreq: 1.4, float: 0.5, bounce: 9, bounceRate: 2.5, noFidget: true },
+  playFish: { pose: 'update', tailAmp: 0.36, tailFreq: 1.5, float: 0.45, bounce: 7, bounceRate: 2.4, noFidget: true },
+  playPeek: { pose: 'listening', tailAmp: 0.24, tailFreq: 1.1, float: 0.35, lookSweep: 0.85, earL: -0.08, earR: 0.08, noFidget: true },
   dockLeft: { pose: 'edge_left', float: 0, tailAmp: 0.06, tailFreq: 0.4, docked: true, hairWave: 1.2 },
   dockLeftPeek: { pose: 'edge_left_peek', float: 0, tailAmp: 0.14, tailFreq: 0.8, docked: true, hairWave: 1.4 },
   dockRight: { pose: 'edge_right', float: 0, tailAmp: 0.06, tailFreq: 0.4, docked: true, hairWave: 1.2 },
@@ -94,7 +104,7 @@ HAGEMI.createAnimator = function createAnimator(fx) {
   let poseIndex = 0, poseClock = 0, lastPoseState = null;
   // Accumulated, never computed as time * frequency: with that, easing the frequency after a state
   // change sweeps the phase at a rate proportional to her uptime, which reads as violent shaking.
-  let tailPhase = 0;
+  let tailPhase = 0, walkPhase = 0, lastStepHalf = -1;
   let blink = 0, blinkStage = 0, blinkClock = 0, nextBlink = rand(1.5, 4), doubleBlink = false;
   let nextFidget = rand(9, 18), reducedMotion = false, talking = false, talkClock = 0;
   const springs = { hairL: [0, 0], hairR: [0, 0], ahoge: [0, 0], tail: [0, 0], skirt: [0, 0] };
@@ -150,13 +160,40 @@ HAGEMI.createAnimator = function createAnimator(fx) {
     const now = performance.now();
 
     // Which painted pose.
-    if (lastPoseState !== activeName) { lastPoseState = activeName; poseClock = 0; }
-    const poses = Array.isArray(S.pose) ? S.pose : [S.pose];
-    if (poses.length > 1) {
-      poseClock += dt;
-      if (poseClock >= (S.swap || 30)) { poseClock = 0; poseIndex++; }
+    if (lastPoseState !== activeName) {
+      lastPoseState = activeName;
+      poseClock = 0;
+      if (S.walkCycle) { walkPhase = 0; lastStepHalf = -1; }
     }
-    const poseName = poses[poseIndex % poses.length];
+    const poses = Array.isArray(S.pose) ? S.pose : [S.pose];
+    const roamStage = S.walkCycle ? (motion?.roamStage || 'travel') : null;
+    const stageProgress = motion?.stageProgress || 0;
+    let poseName;
+    let fastPose = false;
+    let stepBeat = false;
+    if (S.walkCycle) {
+      if (roamStage === 'lead') {
+        poseName = poses[0];
+      } else if (roamStage === 'tail') {
+        poseName = stageProgress > 0.65 ? 'idle' : poses[0];
+      } else {
+        if (!reducedMotion) {
+          const speedPx = Math.abs(motion?.vx || 0);
+          const stridePx = motion?.stridePx || 0;
+          const cyclesPerSec = (speedPx > 8 && stridePx > 10) ? clamp(speedPx / stridePx, 0.85, 3.2) : (S.walkCadence || 1.45);
+          walkPhase = (walkPhase + dt * cyclesPerSec) % 1;
+          const half = Math.floor(walkPhase * 2);
+          if (half !== lastStepHalf) { lastStepHalf = half; stepBeat = true; }
+        }
+        poseName = poses[0];
+      }
+    } else {
+      if (poses.length > 1) {
+        poseClock += dt;
+        if (poseClock >= (S.swap || 30)) { poseClock = 0; poseIndex++; }
+      }
+      poseName = poses[poseIndex % poses.length];
+    }
 
     // Sustained motion.
     Object.assign(target, HAGEMI.REST);
@@ -175,6 +212,30 @@ HAGEMI.createAnimator = function createAnimator(fx) {
     if (S.lookSweep) target.lookX = Math.sin(t * 2) * S.lookSweep;
     if (S.wobble) { target.rot += Math.sin(t * 5.5) * S.wobble; target.head += Math.sin(t * 7) * S.wobble * 0.6; }
     if (S.shake) target.shiftX = Math.sin(t * 64) * S.shake;
+    if (S.walkCycle) {
+      if (roamStage === 'lead') {
+        target.lean += (S.stepLean || 0.06) * 0.65 * stageProgress;
+        target.squash -= 0.025 * Math.sin(stageProgress * Math.PI);
+        target.lookX = 0.45 * stageProgress;
+        target.walkWeight = 0.35 * stageProgress;
+        target.walkAmp = S.walkAmp || 0.38;
+      } else if (roamStage === 'tail') {
+        const decay = 1 - stageProgress;
+        target.lean += (S.stepLean || 0.06) * 0.35 * decay;
+        target.squash -= 0.022 * Math.sin(stageProgress * Math.PI);
+        target.walkWeight = 0;
+        target.walkAmp = S.walkAmp || 0.38;
+      } else {
+        target.bob = reducedMotion ? 0 : -Math.abs(Math.cos(walkPhase * Math.PI * 2)) * (S.stepBounce || 8);
+        target.head += Math.sin(walkPhase * Math.PI * 2) * 0.026;
+        target.lean += S.stepLean || 0.06;
+        target.lookX = 0.52;
+        target.walkWeight = reducedMotion ? 0 : 1;
+        target.walkAmp = S.walkAmp || 0.38;
+      }
+    } else {
+      target.walkWeight = 0;
+    }
 
     // Being low on dried fish sags whatever she is doing, more so at rest.
     const resting = activeName === 'idle';
@@ -202,15 +263,19 @@ HAGEMI.createAnimator = function createAnimator(fx) {
     for (const key of Object.keys(P)) P[key] = lerp(P[key], target[key], rate);
 
     // Follow-through: hair and tail trail the body, the ahoge rings.
+    const facing = motion?.facing < 0 ? -1 : 1;
     const vx = clamp(motion.vx, -2600, 2600), vy = clamp(motion.vy, -2600, 2600);
-    const hairL = stepSpring(springs.hairL, -vx * 0.017, 60, 7, dt);
-    const hairR = stepSpring(springs.hairR, -vx * 0.02, 52, 6, dt);
-    const ahoge = stepSpring(springs.ahoge, -vx * 0.00032 + vy * 0.0002, 120, 8, dt);
-    const tail = stepSpring(springs.tail, vx * 0.00048 + vy * 0.00016, 30, 7.5, dt);
-    const skirt = stepSpring(springs.skirt, -vx * 0.006, 80, 7, dt);
+    const localVx = vx * facing;
+    const hairL = stepSpring(springs.hairL, -localVx * 0.017, 60, 7, dt);
+    const hairR = stepSpring(springs.hairR, -localVx * 0.02, 52, 6, dt);
+    const ahoge = stepSpring(springs.ahoge, -localVx * 0.00032 + vy * 0.0002, 120, 8, dt);
+    const tail = stepSpring(springs.tail, localVx * 0.00048 + vy * 0.00016, 30, 7.5, dt);
+    const skirt = stepSpring(springs.skirt, -localVx * 0.006, 80, 7, dt);
 
     const output = {};
     for (const key of Object.keys(P)) output[key] = P[key] + add[key];
+    output.facing = facing;
+    output.walkPhase = walkPhase;
     output.hairSwayL = hairL;
     output.hairSwayR = hairR;
     output.ahoge += ahoge + Math.sin(t * 2.3) * 0.016;
@@ -218,8 +283,8 @@ HAGEMI.createAnimator = function createAnimator(fx) {
     tailPhase = (tailPhase + dt * Math.max(0, output.tailFreq) * 6.283) % 6.283;
     output.tailPhase = tailPhase;
     output.skirt = skirt + Math.sin(t * 1.15) * 0.9;
-    output.lean = clamp(output.lean + vx * 0.00002, -0.28, 0.28);
-    output.rot += clamp(vx * 0.00004, -0.34, 0.34);
+    output.lean = clamp(output.lean + localVx * 0.00002, -0.28, 0.28);
+    output.rot += clamp(localVx * 0.00004, -0.34, 0.34);
     output.opacity = clamp(1 + add.opacity, 0, 1);
 
     if (talking) {
@@ -251,7 +316,7 @@ HAGEMI.createAnimator = function createAnimator(fx) {
     fx.setStash(showStash && mood.stashLevel != null ? { level: mood.stashLevel, label: mood.stashLabel } : null);
     fx.setClones(activeName === 'exhausted' || activeName === 'sleeping' || S.docked ? 0 : mood.subagents);
 
-    return { P: output, poseName, activeName, blink, sleeping: !!S.sleeping };
+    return { P: output, poseName, activeName, blink, sleeping: !!S.sleeping, fastPose, stepBeat };
   }
 
   return {

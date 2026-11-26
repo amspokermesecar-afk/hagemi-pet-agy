@@ -118,7 +118,28 @@
 用 Antigravity CLI 安装：
 
 ```bash
-agy plugin install https://github.com/KCFindstr/hagemi-pet-agy
+agy plugin install https://github.com/Lihyuu/hagemi-pet-agy
+```
+
+### 定制版新增功能与桌面悬浮窗配置
+
+本分支（[Lihyuu/hagemi-pet-agy](https://github.com/Lihyuu/hagemi-pet-agy)）基于 [KCFindstr/hagemi-pet-agy](https://github.com/KCFindstr/hagemi-pet-agy) 增加与优化了以下能力：
+
+- **独立透明置顶桌面悬浮窗（适配 Antigravity v2.34+）**：当应用内置 CDP 端口不可用时自动切换为桌面点击穿透悬浮窗，可在桌面上自由拖动与停靠。
+- **自主待机 / 漫游 / 玩耍循环与工作状态条**：闲暇时自动眨眼、转头、散步或原地玩耍；工作时显示当前会话与状态胶囊（点击直接回到对应会话）；右键菜单支持「去逛逛 ✨」立刻散步。
+- **原生系统通知**：任务结束、出错或等待确认时弹出系统通知，点击通知拉起 Antigravity 并回到对应对话。
+- **平滑 3/4 双腿骨骼行走动作 & 增强 2.5D 视线跟随**：走路动作原生高刷驱动，支持瞳孔引导、头身联动及全桌面全局光标跟随。
+
+如果你使用的是 **Antigravity v2.34+（需独立桌面悬浮窗）**，安装插件后运行一次内置脚本部署 Electron 运行时（网络慢或超时会自动切换 `npmmirror` 国内镜像）：
+
+```powershell
+# Windows (PowerShell)
+node "$env:USERPROFILE\.gemini\config\plugins\hagemi-pet-agy\tools\setup-desktop-runtime.mjs"
+```
+
+```bash
+# macOS / Linux
+node ~/.gemini/config/plugins/hagemi-pet-agy/tools/setup-desktop-runtime.mjs
 ```
 
 大约 30 秒内她就会出现在右下角。如果没有，重启一次 Antigravity。

@@ -61,6 +61,8 @@ export const REACTIONS = {
   pet: { salience: 0.75, cooldownMin: 0.3, urgent: true },
   shaken: { salience: 0.9, cooldownMin: 0.2, urgent: true },
   grab: { salience: 0.5, cooldownMin: 1, urgent: true },
+  roam: { salience: 0.45, cooldownMin: 3, urgent: true },
+  play: { salience: 0.5, cooldownMin: 1, urgent: true },
 };
 
 export const CHATTINESS = {

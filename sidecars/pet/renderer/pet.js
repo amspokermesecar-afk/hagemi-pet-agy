@@ -6,7 +6,8 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const SIZES = { xs: 130, s: 175, m: 225, l: 295, xl: 380 };
   const HOST_ID = 'hagemi-pet-host';
   const FADE_MS = 120;
-  const POSE_CACHE = 10;
+  const WALK_FADE_MS = 45;
+  const POSE_CACHE = 16;
 
   document.getElementById(HOST_ID)?.remove();
   const host = document.createElement('div');
@@ -32,6 +33,8 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const bubbleMark = make('span', 'mark', bubble);
   const bubbleText = make('span', 'text', bubble);
   const hud = make('div', 'hud');
+  const workPill = make('button', 'work-pill');
+  workPill.type = 'button';
   const menu = make('div', 'menu');
   menu.setAttribute('role', 'menu');
   const panel = make('div', 'panel');
@@ -43,13 +46,21 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const fx = HAGEMI.createFx(backCanvas, frontCanvas);
   const animator = HAGEMI.createAnimator(fx);
 
-  let settings = { language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced', followCursor: true, quotaHoverDelayMs: 650, position: null };
+  let settings = {
+    language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced',
+    followCursor: true, roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
+    notifications: { enabled: true, onDone: true, onWaiting: true, whenFocused: true }, position: null,
+  };
   let ui = {};
   let updateState = { phase: 'idle' }, updateCard = null;
   let hudRows = [];
+  let workBadge = null, baseState = 'idle', facing = 1, roam = null, lastPlayId = null;
+  let nextAutoAt = performance.now() + rand(5000, 9000);
   let scale = 0, pixelRatio = 0, screenRatio = 0, spriteW = 0, spriteH = 0;
   let x = 0, y = 0, vx = 0, vy = 0;
   let dragging = null;
+  let lastOverPet = false, lastOverBubble = false, lastOverPanel = false, lastOverWork = false, lastInteractive = null;
+  let desktopIdleSec = 0;
   const abort = new AbortController();
   const listen = (target, type, handler, extra = {}) => target.addEventListener(type, handler, { signal: abort.signal, ...extra });
 
@@ -59,7 +70,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
 
   // ---- Art: requested over the sidecar bridge, one pose at a time --------------------------
   const blobs = new Map(), pendingArt = new Map(), poses = new Map(), building = new Map();
-  let current = null, previous = null, fade = 1, fadeStart = 0, wantedPose = null;
+  let current = null, previous = null, fade = 1, fadeStart = 0, fadeDuration = FADE_MS, wantedPose = null;
 
   function requestArt(name) {
     if (blobs.has(name)) return Promise.resolve(blobs.get(name));
@@ -93,11 +104,17 @@ HAGEMI.boot = async function boot(send, options = {}) {
         requestArt(name),
         info.blink ? requestArt(`blink/${name}`) : null,
         ...['tail', 'under', 'cut'].map(layer => (info.tailRect ? requestArt(`${layer}/${name}`) : null)),
+        ...(info.walkLegs ? [`limbs/${name}_leg_l`, `limbs/${name}_leg_r`, `limbs/${name}_leg_cut`].map(requestArt) : []),
       ]);
       if (!files[0] || !running) return null;
       const layers = await Promise.all(files.map(blob => (blob ? decode(blob) : null)));
-      const pose = rig.buildPose(name, ...layers, info);
-      for (const layer of layers) layer?.close();
+      let pose;
+      try {
+        const [bitmap, blinkBitmap, tailBitmap, underBitmap, cutBitmap, legLBitmap, legRBitmap, legCutBitmap] = layers;
+        pose = rig.buildPose(name, bitmap, blinkBitmap, tailBitmap, underBitmap, cutBitmap, info, legLBitmap, legRBitmap, legCutBitmap);
+      } finally {
+        for (const layer of layers) layer?.close();
+      }
       poses.set(name, pose);
       // Keep only the poses in recent use on the GPU; the compressed art stays in memory.
       if (poses.size > POSE_CACHE) for (const [other, value] of poses) {
@@ -113,17 +130,24 @@ HAGEMI.boot = async function boot(send, options = {}) {
     if (!art || !running) return;
     fx.setCloneImage(await createImageBitmap(art, { resizeWidth: 222, resizeHeight: 256, resizeQuality: 'high' }));
   }
-  function usePose(name) {
+  function preloadWalkPoses() {
+    for (const name of HAGEMI.WALK_POSES || []) {
+      ensurePose(name).catch(err => send({ type: 'error', message: `pose ${name}: ${err?.message || err}` }));
+    }
+  }
+  function usePose(name, { fast = false } = {}) {
     if (wantedPose === name || !name) return;
     wantedPose = name;
+    const duration = fast ? WALK_FADE_MS : FADE_MS;
     ensurePose(name).then(pose => {
       if (!pose || wantedPose !== name || current === pose) return;
       previous = current;
       current = pose;
+      fadeDuration = duration;
       fade = previous ? 0 : 1;
       fadeStart = performance.now();
-      if (previous) animator.play('pop');
-    });
+      if (previous && !fast) animator.play('pop');
+    }).catch(err => send({ type: 'error', message: `pose ${name}: ${err?.message || err}` }));
   }
 
   function applySize() {
@@ -222,6 +246,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     speech = null;
     animator.setTalking(false);
     bubble.classList.remove('show');
+    syncDesktopHit(lastOverPet, false, lastOverPanel);
   }
   listen(bubble, 'click', closeBubble);
 
@@ -248,8 +273,118 @@ HAGEMI.boot = async function boot(send, options = {}) {
     hud.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }
   let hoverTimer = 0;
-  function showHud() { if (hudRows.length && !dragging && !menu.classList.contains('show') && !panel.classList.contains('show')) { renderHud(); hud.classList.add('show'); placeHud(); animator.setMood({ showStash: true }); } }
-  function hideHud() { hud.classList.remove('show'); animator.setMood({ showStash: false }); }
+  function showHud() { if (hudRows.length && !dragging && !menu.classList.contains('show') && !panel.classList.contains('show')) { renderHud(); hud.classList.add('show'); placeHud(); animator.setMood({ showStash: true }); syncWorkPill(); } }
+  function hideHud() { hud.classList.remove('show'); animator.setMood({ showStash: false }); syncWorkPill(); }
+
+  function pointInVisible(el, cx, cy) {
+    if (!el.classList.contains('show')) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom;
+  }
+  function syncDesktopHit(overPet = lastOverPet, overBubble = lastOverBubble, overPanel = lastOverPanel, overWork = lastOverWork) {
+    lastOverPet = !!overPet;
+    lastOverBubble = !!overBubble;
+    lastOverPanel = !!overPanel;
+    lastOverWork = !!overWork;
+    if (!options.desktop) return;
+    const hidden = stage.style.display === 'none';
+    const selectOpen = panel.classList.contains('show') && root.activeElement?.tagName === 'SELECT';
+    const interactive = Boolean(
+      dragging ||
+      menu.classList.contains('show') ||
+      (!hidden && lastOverPet) ||
+      (bubble.classList.contains('show') && lastOverBubble) ||
+      (workPill.classList.contains('show') && lastOverWork) ||
+      (panel.classList.contains('show') && (lastOverPanel || selectOpen))
+    );
+    if (interactive !== lastInteractive) {
+      lastInteractive = interactive;
+      window.__hagemiDesktop?.setInteractive(interactive);
+    }
+  }
+
+  function placeWorkPill() {
+    const width = workPill.offsetWidth, height = workPill.offsetHeight;
+    const left = clamp(x - width / 2, 8, viewW() - width - 8);
+    const below = y + spriteH * 0.5 + 4;
+    const top = below + height < viewH() - 6 ? below : clamp(y - spriteH * 0.5 - height - 4, 6, viewH() - height - 6);
+    workPill.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+  }
+  function syncWorkPill() {
+    const canShow = Boolean(
+      workBadge &&
+      settings.workStatusEnabled !== false &&
+      !dragging &&
+      !hud.classList.contains('show') &&
+      !menu.classList.contains('show') &&
+      !panel.classList.contains('show') &&
+      stage.style.display !== 'none'
+    );
+    if (!canShow) {
+      if (workPill.classList.contains('show')) {
+        workPill.classList.remove('show');
+        syncDesktopHit(lastOverPet, lastOverBubble, lastOverPanel, false);
+      }
+      return;
+    }
+    workPill.dataset.tone = workBadge.tone || 'work';
+    workPill.textContent = workBadge.title ? `${workBadge.label} · ${workBadge.title}` : workBadge.label;
+    workPill.title = ui.work_click_hint || 'Click to return to conversation';
+    workPill.classList.add('show');
+    placeWorkPill();
+  }
+  listen(workPill, 'click', () => {
+    if (!workBadge) return;
+    animator.play('hop');
+    send({ type: 'focus_conversation', conversationId: workBadge.conversationId || null, title: workBadge.title || '' });
+  });
+
+  function stopRoam(save = false) {
+    if (!roam) return;
+    const stateName = roam.overrideState;
+    roam = null;
+    vx = 0;
+    vy = 0;
+    if (stateName) animator.clearOverride(stateName);
+    if (save) savePosition();
+  }
+  function startRoam(styleName, { announce = false, fromUser = false } = {}) {
+    if (docked || sulking || dragging || stage.style.display === 'none') return false;
+    if (!fromUser && (settings.roamEnabled === false || !HAGEMI.canRoamInState(baseState))) return false;
+    const plan = HAGEMI.planRoam({ x, y, viewW: viewW(), viewH: viewH(), spriteW, spriteH, facing, styleName });
+    if (!plan) return false;
+    stopRoam(false);
+    facing = plan.dir;
+    const overrideState = plan.state;
+    roam = { plan, elapsed: 0, stage: 'lead', stageProgress: 0, overrideState, fromUser: !!fromUser };
+    if (plan.state !== 'roamFloat') {
+      for (const name of HAGEMI.WALK_POSES || []) {
+        ensurePose(name).catch(err => send({ type: 'error', message: `pose ${name}: ${err?.message || err}` }));
+      }
+    }
+    animator.override(overrideState, plan.totalSec * 1000 + 400);
+    if (plan.burst) fx.burst(plan.burst, STAGE.cx, 400, 5);
+    if (announce) send({ type: 'activity', kind: 'roam', style: plan.style });
+    return true;
+  }
+  function startPlay(sceneId, { announce = true, fromUser = false } = {}) {
+    if (docked || sulking || dragging || stage.style.display === 'none' || (!fromUser && baseState !== 'idle')) return false;
+    stopRoam(false);
+    const scene = (sceneId && HAGEMI.PLAY_SCENES.find(item => item.id === sceneId)) || HAGEMI.pickPlayScene(lastPlayId);
+    if (!scene) return false;
+    lastPlayId = scene.id;
+    animator.override(scene.state, scene.ms);
+    if (scene.gesture) animator.play(scene.gesture);
+    if (scene.burst) fx.burst(scene.burst, STAGE.cx, 400, 6);
+    if (announce) send({ type: 'activity', kind: 'play', scene: scene.id });
+    return true;
+  }
+  function restIdle() {
+    stopRoam(true);
+    animator.clearOverride();
+    animator.play('pop');
+    nextAutoAt = performance.now() + rand(18000, 30000);
+  }
 
   function openMenu(px, py) {
     // The status panel would open behind the menu once the hover delay ran out.
@@ -266,6 +401,9 @@ HAGEMI.boot = async function boot(send, options = {}) {
     const divider = () => make('div', 'divider', menu);
     item(ui.talk || 'Say something', () => send({ type: 'talk' }));
     item(ui.pat || 'Pat her head', () => petted());
+    item(ui.action_roam || '🐾 Stroll around', () => startRoam(Math.random() < 0.75 ? 'stroll' : 'trot', { announce: true, fromUser: true }));
+    item(ui.action_play || '✨ Play a bit', () => startPlay(undefined, { announce: true, fromUser: true }));
+    item(ui.action_idle || '☁️ Rest (Idle)', () => restIdle());
     divider();
     item(ui.language_en || 'English', () => patch({ language: 'en' }), settings.language === 'en');
     item(ui.language_zhs || '简体中文', () => patch({ language: 'zhs' }), settings.language === 'zhs');
@@ -275,14 +413,19 @@ HAGEMI.boot = async function boot(send, options = {}) {
     divider();
     item(ui.mute || 'Mute comments', () => patch({ muted: !settings.muted }), settings.muted);
     item(ui.ai || 'AI comments', () => patch({ ai: { enabled: !settings.ai?.enabled } }), settings.ai?.enabled);
+    item(ui.roam_enabled || 'Allow roaming', () => patch({ roamEnabled: !settings.roamEnabled }), settings.roamEnabled !== false);
+    item(ui.work_status_enabled || 'Work status linkage', () => patch({ workStatusEnabled: !settings.workStatusEnabled }), settings.workStatusEnabled !== false);
+    item(ui.notify_enabled || 'System notifications', () => patch({ notifications: { enabled: !(settings.notifications?.enabled !== false) } }), settings.notifications?.enabled !== false);
     item(ui.settings || 'Settings…', () => openPanel());
     item((updateState.phase === 'available' ? ui.update_available_menu : ui.update_menu) || '🐾 Check for updates…', () => { openPanel(); if (updateState.phase === 'idle') send({ type: 'update_check' }); });
     item(ui.hide || 'Hide for 1 hour', () => patch({ hiddenUntil: Date.now() + 3600000 }));
     menu.classList.add('show');
     const width = menu.offsetWidth, height = menu.offsetHeight;
     menu.style.transform = `translate3d(${clamp(px, 6, viewW() - width - 6)}px, ${clamp(py, 6, viewH() - height - 6)}px, 0)`;
+    syncWorkPill();
+    syncDesktopHit();
   }
-  function closeMenu() { menu.classList.remove('show'); }
+  function closeMenu() { menu.classList.remove('show'); syncWorkPill(); syncDesktopHit(); }
   // A closed shadow root hides its insides from the window, so clicks are told apart in two places:
   // the window only sees clicks elsewhere in the app, and the root sees which of her parts was hit.
   listen(window, 'pointerdown', event => { if (!event.composedPath().includes(host)) { closeMenu(); closePanel(); } }, { capture: true });
@@ -342,7 +485,9 @@ HAGEMI.boot = async function boot(send, options = {}) {
         control.appendChild(option);
       }
       control.value = value;
-      control.addEventListener('change', () => onChange(control.value));
+      control.addEventListener('change', () => { onChange(control.value); syncDesktopHit(); });
+      control.addEventListener('focus', () => syncDesktopHit());
+      control.addEventListener('blur', () => syncDesktopHit());
       return control;
     };
     const check = (value, onChange) => {
@@ -367,9 +512,23 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.animation || 'Animation', select(s.animation, [['smooth', ui.animation_smooth], ['balanced', ui.animation_balanced], ['saver', ui.animation_saver]], value => patch({ animation: value })));
     field(ui.chattiness || 'Chattiness', select(s.chattiness, [['quiet', ui.chattiness_quiet], ['normal', ui.chattiness_normal], ['chatty', ui.chattiness_chatty]], value => patch({ chattiness: value })));
     field(ui.followCursor || 'Watch the cursor', check(s.followCursor, value => patch({ followCursor: value })));
+    field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
+    field(ui.work_status_enabled || 'Work status linkage', check(s.workStatusEnabled !== false, value => patch({ workStatusEnabled: value })));
     field(ui.autoCheckUpdates, check(s.autoCheckUpdates, value => patch({ autoCheckUpdates: value })));
     field(ui.quotaHoverDelayMs || 'Quota hover delay (ms, 0 = instant)', number(s.quotaHoverDelayMs, 0, 10000, value => patch({ quotaHoverDelayMs: value })));
     field(ui.mute || 'Mute comments', check(s.muted, value => patch({ muted: value })));
+    const notif = s.notifications || {};
+    section(ui.section_notifications || 'System notifications');
+    field(ui.notify_enabled || 'Enable system notifications', check(notif.enabled !== false, value => patch({ notifications: { enabled: value } })));
+    field(ui.notify_on_done || 'Notify on task done or error', check(notif.onDone !== false, value => patch({ notifications: { onDone: value } })));
+    field(ui.notify_on_waiting || 'Notify when waiting for input', check(notif.onWaiting !== false, value => patch({ notifications: { onWaiting: value } })));
+    field(ui.notify_when_focused || 'Notify even while focused', check(notif.whenFocused !== false, value => patch({ notifications: { whenFocused: value } })));
+    const testNotifBtn = document.createElement('button');
+    testNotifBtn.type = 'button';
+    testNotifBtn.className = 'panel-action';
+    testNotifBtn.textContent = ui.notify_test || '🔔 Send test notification';
+    testNotifBtn.addEventListener('click', () => send({ type: 'notify_test' }));
+    panel.appendChild(testNotifBtn);
     section(ui.section_ai || 'AI comments');
     field(ui.ai_enabled || 'Use AI', check(ai.enabled, value => patch({ ai: { enabled: value } })));
     const choices = [...new Set([ai.model, ...modelChoices])].filter(Boolean).map(label => [label, label]);
@@ -406,27 +565,38 @@ HAGEMI.boot = async function boot(send, options = {}) {
     const left = x + spriteW * 0.5 + width + 10 < viewW() ? x + spriteW * 0.5 : Math.max(8, x - spriteW * 0.5 - width);
     panel.style.transform = `translate3d(${clamp(left, 8, viewW() - width - 8)}px, ${clamp(y - height / 2, 8, Math.max(8, viewH() - height - 8))}px, 0)`;
     send({ type: 'panelOpened' });
+    syncWorkPill();
+    syncDesktopHit();
   }
-  function closePanel() { panel.classList.remove('show'); }
+  function closePanel() { panel.classList.remove('show'); syncWorkPill(); syncDesktopHit(lastOverPet, lastOverBubble, false); }
   // Typing in the form must not reach the app's keyboard shortcuts or composer.
   for (const type of ['keydown', 'keyup', 'keypress']) listen(panel, type, event => { event.stopPropagation(); if (event.key === 'Escape') closePanel(); });
 
   function patch(change) {
-    settings = { ...settings, ...change, ai: { ...settings.ai, ...change.ai } };
+    settings = {
+      ...settings,
+      ...change,
+      notifications: { ...settings.notifications, ...change.notifications },
+      ai: { ...settings.ai, ...change.ai },
+    };
+    if (change.roamEnabled === false) stopRoam(false);
     applyVisibility();
     applySize();
+    syncWorkPill();
     send({ type: 'settings', patch: change });
   }
   function applyVisibility() {
     const hidden = settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
     stage.style.display = hidden ? 'none' : 'block';
-    if (hidden) { closeBubble(); hideHud(); }
+    if (hidden) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); syncWorkPill(); syncDesktopHit(false, false, false, false); }
+    else { syncWorkPill(); syncDesktopHit(); }
   }
 
   // ---- Touch: pokes, pats, shakes, a short temper -----------------------------------------
   let annoyance = 0, rub = 0, lastRub = { x: 0, y: 0, at: 0 }, pettedUntil = 0, sulking = false;
   const inHead = py => py < y - spriteH * 0.06;
   function petted() {
+    stopRoam(false);
     const now = performance.now();
     if (sulking) {
       sulking = false;
@@ -443,6 +613,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     annoyance = Math.max(0, annoyance - 1.5);
   }
   function poked(head) {
+    stopRoam(false);
     if (head) { petted(); return; }
     if (sulking) { animator.play('recoil'); return; }
     annoyance += 1;
@@ -472,20 +643,28 @@ HAGEMI.boot = async function boot(send, options = {}) {
   // Click-through: the hit box only catches the pointer over painted pixels.
   function updateHitTest(event) {
     if (dragging) return;
+    const hidden = stage.style.display === 'none';
     const originX = x - (STAGE.w / 2) * scale, originY = y - (STAGE.h / 2) * scale;
     const artX = (event.clientX - originX) / scale, artY = (event.clientY - originY) / scale;
-    const over = rig.opaqueAt(current, artX, artY);
+    const over = !hidden && rig.opaqueAt(current, artX, artY, docked ? 1 : facing);
     const value = over ? 'auto' : 'none';
     if (hit.style.pointerEvents !== value) hit.style.pointerEvents = value;
+    const overBubble = pointInVisible(bubble, event.clientX, event.clientY);
+    const overPanel = pointInVisible(panel, event.clientX, event.clientY);
+    const overWork = pointInVisible(workPill, event.clientX, event.clientY);
+    syncDesktopHit(over, overBubble, overPanel, overWork);
   }
 
   let lastClickAt = 0, shakeFlips = 0, shakeSign = 0, shakeClock = 0;
   listen(hit, 'pointerdown', event => {
     if (event.button !== 0) return;
     event.preventDefault();
+    stopRoam(false);
     hit.setPointerCapture(event.pointerId);
     clearTimeout(hoverTimer);
     dragging = { id: event.pointerId, startX: event.clientX, startY: event.clientY, offsetX: event.clientX - x, offsetY: event.clientY - y, moved: false, at: performance.now(), px: event.clientX, py: event.clientY };
+    syncWorkPill();
+    syncDesktopHit(true);
     closeBubble();
     hideHud();
   });
@@ -509,6 +688,9 @@ HAGEMI.boot = async function boot(send, options = {}) {
     if (!dragging || (event.pointerId !== undefined && event.pointerId !== dragging.id)) return;
     const now = performance.now(), wasDrag = dragging.moved, heldAt = dragging.at, startY = dragging.startY;
     dragging = null;
+    syncWorkPill();
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) updateHitTest(event);
+    else syncDesktopHit();
     if (wasDrag) {
       animator.clearOverride('dragged');
       if (shakeFlips >= 4) {
@@ -554,6 +736,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   });
 
   let pointerX = 0, pointerY = 0;
+  let gazeX = 0, gazeY = 0, gazeGoalX = 0, gazeGoalY = 0;
   listen(window, 'pointermove', event => {
     pointerX = event.clientX;
     pointerY = event.clientY;
@@ -564,12 +747,40 @@ HAGEMI.boot = async function boot(send, options = {}) {
   listen(window, 'keydown', () => { lastKeyAt = performance.now(); }, { passive: true, capture: true });
   listen(window, 'resize', () => { applySize(); settle(); }, { passive: true });
 
+  if (options.desktop) {
+    listen(document, 'pointerleave', () => { if (!dragging) syncDesktopHit(false, false, false, false); });
+    listen(window, 'blur', () => { closeMenu(); syncDesktopHit(false, false, false, false); });
+    window.__hagemiDesktop?.onCursorMove?.(pos => {
+      if (!running || !pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+      pointerX = pos.x;
+      pointerY = pos.y;
+      lastPointerAt = performance.now();
+      if (!dragging) updateHitTest({ clientX: pos.x, clientY: pos.y });
+    });
+  }
+
   // Tell the sidecar when nobody is looking, so she does not spend tokens on an empty room.
-  const presence = () => send({ type: 'presence', visible: !document.hidden, focused: document.hasFocus(), idleMs: Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt)), language: navigator.language });
+  const pollDesktopIdle = async () => {
+    if (!options.desktop || !window.__hagemiDesktop?.getIdleSec) return;
+    try {
+      const sec = await window.__hagemiDesktop.getIdleSec();
+      if (Number.isFinite(sec) && sec >= 0) desktopIdleSec = sec;
+    } catch { /* Ignore IPC failure. */ }
+  };
+  const presence = () => {
+    const localIdleMs = Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt));
+    const idleMs = options.desktop ? Math.min(localIdleMs, Math.round(desktopIdleSec * 1000)) : localIdleMs;
+    const focused = options.desktop ? (!document.hidden && desktopIdleSec < 300) : document.hasFocus();
+    send({ type: 'presence', visible: !document.hidden, focused, idleMs, language: navigator.language });
+  };
   listen(document, 'visibilitychange', presence);
   listen(window, 'focus', presence);
   listen(window, 'blur', presence);
-  const presenceTimer = setInterval(presence, 15000);
+  const presenceTimer = setInterval(() => {
+    if (options.desktop) pollDesktopIdle().then(presence);
+    else presence();
+  }, 15000);
+  if (options.desktop) pollDesktopIdle();
 
   // ---- Frame loop -----------------------------------------------------------------------
   let lastFrame = performance.now(), t = rand(0, 100), raf = 0;
@@ -586,13 +797,34 @@ HAGEMI.boot = async function boot(send, options = {}) {
     raf = requestAnimationFrame(frame);
     if (!host.isConnected) { dispose(); return; }
     if (document.hidden || stage.style.display === 'none') { lastFrame = now; return; }
-    const lively = animator.busy || dragging || Math.hypot(vx, vy) > 3 || speech || fade < 1;
-    const fpsCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 60 : 30;
-    if (now - lastFrame < 1000 / fpsCap - 2) return;
+    const gazeMoving = Math.abs(gazeX - gazeGoalX) > 0.015 || Math.abs(gazeY - gazeGoalY) > 0.015;
+    const lively = animator.busy || dragging || roam || Math.hypot(vx, vy) > 3 || speech || fade < 1 || gazeMoving;
+    const fpsCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 0 : 30;
+    if (fpsCap && now - lastFrame < 1000 / fpsCap - 2) return;
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;
     t += dt;
     if (!anchor) settle();
+
+    if (roam) {
+      if (dragging || docked || sulking || stage.style.display === 'none' || (!roam.fromUser && !HAGEMI.canRoamInState(baseState))) {
+        stopRoam(false);
+      } else {
+        roam.elapsed += dt;
+        const sample = HAGEMI.sampleRoam(roam.plan, roam.elapsed);
+        x = sample.x;
+        y = sample.y;
+        vx = sample.vx;
+        vy = sample.vy;
+        roam.stage = sample.stage;
+        roam.stageProgress = sample.stageProgress;
+        keepInBounds();
+        if (sample.done) {
+          stopRoam(true);
+          nextAutoAt = now + (baseState === 'idle' ? rand(10000, 18000) : rand(16000, 28000));
+        }
+      }
+    }
 
     if (dragging && dragging.moved) {
       const goalX = dragging.px - dragging.offsetX, goalY = dragging.py - dragging.offsetY;
@@ -605,7 +837,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
       const sign = Math.sign(vx);
       if (Math.abs(vx) > 700 && sign && sign !== shakeSign) { shakeSign = sign; shakeFlips++; shakeClock = 0; }
       if (shakeClock > 0.6) shakeFlips = 0;
-    } else if (!dragging && !docked) {
+    } else if (!dragging && !docked && !roam) {
       // Thrown: no gravity here, just drag and soft walls.
       x += vx * dt;
       y += vy * dt;
@@ -629,13 +861,47 @@ HAGEMI.boot = async function boot(send, options = {}) {
     // A window dragged to a screen with another scale need not resize, so the scale is checked here.
     const ratio = window.devicePixelRatio || 1, snap = value => Math.round(value * ratio) / ratio;
     if (ratio !== screenRatio) applySize();
-    // Placed on whole screen pixels for the same reason as the canvas size; the steps are too small to see.
-    stage.style.transform = `translate3d(${snap(x - (STAGE.w / 2 + MARGIN) * scale)}px, ${snap(y - (STAGE.h / 2 + MARGIN) * scale)}px, 0)`;
+    // Smooth subpixel translation while actively moving to prevent frame-stepping judder; snap to whole pixels at rest.
+    const tx = x - (STAGE.w / 2 + MARGIN) * scale, ty = y - (STAGE.h / 2 + MARGIN) * scale;
+    stage.style.transform = roam || dragging
+      ? `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0)`
+      : `translate3d(${snap(tx)}px, ${snap(ty)}px, 0)`;
 
     // Persist where she was left, once she has settled.
-    if (!dragging && !vx && !vy && (Math.abs(x - savedAt.x) > 1 || Math.abs(y - savedAt.y) > 1)) {
+    if (!dragging && !roam && !vx && !vy && (Math.abs(x - savedAt.x) > 1 || Math.abs(y - savedAt.y) > 1)) {
       saveTimer += dt;
       if (saveTimer > 0.6) { saveTimer = 0; savePosition(); }
+    }
+
+    // Autonomous idle, turn, roam, and play cycle; during calm background work, gently stroll while keeping the work pose.
+    const autoStateReady = baseState === 'idle'
+      ? ['idle', 'hum', 'float', 'stretch'].includes(animator.state)
+      : (HAGEMI.isCalmWorkState(baseState) && animator.state === baseState);
+    if (!roam && !dragging && !docked && !sulking && !speech
+      && !menu.classList.contains('show') && !panel.classList.contains('show')
+      && !reducedMotion.matches && stage.style.display !== 'none'
+      && now >= nextAutoAt && !animator.busy && autoStateReady) {
+      if (baseState === 'idle') {
+        const kind = HAGEMI.rollActivity(Math.random(), { fixed: settings.roamEnabled === false });
+        if (kind === 'turn') {
+          facing = -facing;
+          animator.play('pop');
+          nextAutoAt = now + rand(8000, 14000);
+        } else if (kind === 'roam') {
+          if (!startRoam(undefined, { announce: false })) startPlay(undefined, { announce: false });
+          nextAutoAt = now + rand(10000, 18000);
+        } else if (kind === 'play') {
+          startPlay(undefined, { announce: false });
+          nextAutoAt = now + rand(12000, 20000);
+        } else {
+          nextAutoAt = now + rand(8000, 14000);
+        }
+      } else {
+        if (settings.roamEnabled !== false) {
+          startRoam(undefined, { announce: false });
+        }
+        nextAutoAt = now + rand(16000, 28000);
+      }
     }
 
     // Docked at a window edge she watches from the wall, peeking out as the cursor nears.
@@ -649,26 +915,63 @@ HAGEMI.boot = async function boot(send, options = {}) {
       animator.override(dockState, 1200);
     }
 
-    const frameData = animator.update(dt, t, { vx, vy });
+    const activeFacing = docked ? 1 : facing;
+    const frameData = animator.update(dt, t, {
+      vx,
+      vy,
+      facing: activeFacing,
+      roamStage: roam?.stage || null,
+      stageProgress: roam?.stageProgress || 0,
+      stridePx: roam?.plan?.stridePx || 0,
+    });
     const { P } = frameData;
-    usePose(frameData.poseName);
+    usePose(frameData.poseName, { fast: !!frameData.fastPose });
+    if (frameData.stepBeat && roam?.stage === 'travel' && (roam.plan.style === 'stroll' || roam.plan.style === 'trot')) {
+      fx.burst('step', STAGE.cx - activeFacing * 28, 615, roam.plan.style === 'trot' ? 2 : 1);
+    }
 
     // She watches the cursor when it is active, the keyboard while you type.
-    if (settings.followCursor) {
-      const fresh = now - lastPointerAt < 3500;
-      if (fresh && !['sleeping', 'sulk', 'exhausted'].includes(frameData.activeName)) {
-        const dx = (pointerX - x) / 420, dy = (pointerY - (y - spriteH * 0.2)) / 340;
-        const weight = frameData.activeName === 'idle' ? 1 : 0.35;
-        P.lookX = lerp(P.lookX, clamp(dx, -1, 1), weight);
-        P.lookY = lerp(P.lookY, clamp(dy, -1, 1), weight);
-        P.head += clamp(dx, -1, 1) * 0.04 * weight;
-      }
+    const gazeFresh = settings.followCursor && now - lastPointerAt < 5000;
+    const canTrackGaze = gazeFresh && !['sleeping', 'sulk', 'exhausted'].includes(frameData.activeName);
+    if (canTrackGaze) {
+      const rawDx = ((pointerX - x) / 240) * activeFacing;
+      const rawDy = (pointerY - (y - spriteH * 0.22)) / 200;
+      const tx = Math.tanh(rawDx * 1.15);
+      const ty = Math.tanh(rawDy * 1.15);
+      const active = frameData.activeName;
+      const weight = roam && roam.stage === 'travel'
+        ? 0.25
+        : ['searching', 'playPeek'].includes(active)
+          ? 0.55
+          : ['idle', 'listening', 'hum', 'petted', 'happy', 'proud', 'dockLeft', 'dockLeftPeek', 'dockRight', 'dockRightPeek'].includes(active)
+            ? 1
+            : 0.78;
+      gazeGoalX = tx * weight;
+      gazeGoalY = ty * weight;
+    } else {
+      gazeGoalX = 0;
+      gazeGoalY = 0;
+    }
+    const gazeRate = 1 - Math.exp(-dt * (canTrackGaze ? 11 : 3.5));
+    gazeX = lerp(gazeX, gazeGoalX, gazeRate);
+    gazeY = lerp(gazeY, gazeGoalY, gazeRate);
+    if (Math.abs(gazeX) < 0.001 && gazeGoalX === 0) gazeX = 0;
+    if (Math.abs(gazeY) < 0.001 && gazeGoalY === 0) gazeY = 0;
+    if (gazeX || gazeY) {
+      P.lookX = clamp(P.lookX + gazeX, -1.15, 1.15);
+      P.lookY = clamp(P.lookY + gazeY, -1.15, 1.15);
+      P.head += gazeX * 0.115 + gazeX * gazeY * 0.025;
+      P.nod += gazeY * 7.5;
+      P.lean = clamp(P.lean + gazeX * 0.065, -0.28, 0.28);
+      P.earL += gazeY * 0.07 - gazeX * 0.03;
+      P.earR += -gazeY * 0.07 - gazeX * 0.03;
+      P.ahoge += gazeX * 0.08;
     }
     if (now - lastKeyAt < 1600 && frameData.activeName === 'idle') P.lookY = lerp(P.lookY, 0.85, 0.75);
 
     // Wall-clock, not frame count: a slow frame must not stretch the overlap into a ghost.
     if (fade < 1) {
-      fade = Math.min(1, (now - fadeStart) / FADE_MS);
+      fade = Math.min(1, (now - fadeStart) / fadeDuration);
       if (fade >= 1) previous = null;
     }
     rig.draw(current, previous, fade, P, t, frameData.blink, pixelRatio, scale);
@@ -677,6 +980,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     stepSpeech(dt, now);
     if (speech) placeBubble();
     if (hud.classList.contains('show')) placeHud();
+    if (workPill.classList.contains('show')) placeWorkPill();
 
     // Sidecar gone: say goodbye instead of haunting the window.
     if (!options.standalone && now - lastMessageAt > 90000 && !leaving) leave();
@@ -686,8 +990,10 @@ HAGEMI.boot = async function boot(send, options = {}) {
   function leave() {
     if (leaving) return;
     leaving = performance.now() + 1250;
+    stopRoam(false);
     closeBubble();
     hideHud();
+    workPill.classList.remove('show');
     animator.override('bye', 1400);
     animator.play('leave');
   }
@@ -704,22 +1010,35 @@ HAGEMI.boot = async function boot(send, options = {}) {
     host.remove();
   }
 
+  function mergeSettings(incoming) {
+    if (!incoming) return;
+    settings = {
+      ...settings,
+      ...incoming,
+      notifications: { ...settings.notifications, ...incoming.notifications },
+      ai: { ...settings.ai, ...incoming.ai },
+    };
+    if (settings.roamEnabled === false) stopRoam(false);
+  }
+
   function receive(message) {
     lastMessageAt = performance.now();
     switch (message.t) {
       case 'hello':
-        settings = { ...settings, ...message.settings };
+        mergeSettings(message.settings);
         ui = message.ui || ui;
         applySize();
         placeInitial();
         applyVisibility();
+        syncWorkPill();
         break;
       case 'settings':
-        settings = { ...settings, ...message.settings };
+        mergeSettings(message.settings);
         ui = message.ui || ui;
         if (panel.classList.contains('show')) { const scroll = panel.scrollTop; openPanel(); panel.scrollTop = scroll; }
         applySize();
         applyVisibility();
+        syncWorkPill();
         break;
       case 'art':
         receiveArt(message.name, message.data);
@@ -729,10 +1048,14 @@ HAGEMI.boot = async function boot(send, options = {}) {
         renderUpdate();
         break;
       case 'facts':
-        if (!sulking) animator.setState(message.state);
+        baseState = message.state || 'idle';
+        if (roam && !roam.fromUser && !HAGEMI.canRoamInState(baseState)) stopRoam(false);
+        if (!sulking) animator.setState(baseState);
         animator.setMood({ quota: message.quota || 'ok', late: !!message.late, stashLevel: message.stashLevel ?? null, stashLabel: message.stashLabel || '', subagents: message.subagents || 0 });
         hudRows = message.hud || [];
+        workBadge = message.workBadge || null;
         if (hud.classList.contains('show')) { renderHud(); placeHud(); }
+        syncWorkPill();
         break;
       case 'react':
         if (message.state && !sulking && !dragging && !docked) animator.override(message.state, message.ms || 2600);
@@ -765,8 +1088,16 @@ HAGEMI.boot = async function boot(send, options = {}) {
   placeInitial();
   usePose('idle');
   preloadClones();
+  preloadWalkPoses();
   raf = requestAnimationFrame(frame);
   presence();
   send({ type: 'ready' });
-  return { receive, dispose, animator, get position() { return { x, y }; } };
+  return {
+    receive,
+    dispose,
+    animator,
+    get position() { return { x, y }; },
+    get pose() { return current?.name || null; },
+    get hasWalkLegs() { return Boolean(current?.legs?.left && current?.legs?.right); },
+  };
 };

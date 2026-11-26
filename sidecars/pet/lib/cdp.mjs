@@ -160,6 +160,22 @@ export class RendererBridge {
     for (const session of this.sessions.values()) if (session.ready) this.post(session, message);
   }
 
+  async focusConversation(conversationId) {
+    const safeId = typeof conversationId === 'string' && /^[a-zA-Z0-9_-]{4,128}$/.test(conversationId) ? conversationId : '';
+    const session = [...this.sessions.values()].find(s => !s.closed);
+    if (!session) return false;
+    try {
+      await session.command('Page.bringToFront');
+      if (safeId) {
+        const expr = `(() => { const p = '/conversation/' + ${JSON.stringify(safeId)}; if (location.pathname !== p) { history.pushState(null, '', p); window.dispatchEvent(new PopStateEvent('popstate')); } })()`;
+        await session.command('Runtime.evaluate', { expression: expr });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async tick() {
     if (this.busy || this.stopped) return;
     this.busy = true;

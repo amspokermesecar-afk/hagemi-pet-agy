@@ -6,8 +6,8 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
-export const UPDATE_REPO = 'https://github.com/KCFindstr/hagemi-pet-agy.git';
-const API = 'https://api.github.com/repos/KCFindstr/hagemi-pet-agy';
+export const UPDATE_REPO = 'https://github.com/Lihyuu/hagemi-pet-agy.git';
+const API = 'https://api.github.com/repos/Lihyuu/hagemi-pet-agy';
 const SHA = /^[a-f0-9]{40}$/;
 export const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 

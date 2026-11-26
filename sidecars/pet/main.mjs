@@ -6,10 +6,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Brain, Budget, ModelResolver } from './lib/brain.mjs';
 import { RendererBridge } from './lib/cdp.mjs';
+import { DesktopBridge } from './lib/desktop-bridge.mjs';
+import { DesktopHost } from './lib/desktop-host.mjs';
 import { ambientTriggers, chooseState, classifyTurnEnd, festival, isLate, modelFamily, REACTIONS, timeOfDay } from './lib/director.mjs';
 import { fill, resolveLanguage, UI } from './lib/lines.mjs';
 import { LanguageServer } from './lib/ls-client.mjs';
 import { Monitor } from './lib/monitor.mjs';
+import { buildNotification } from './lib/notify.mjs';
 import { formatDuration, isResetSoon, levelForModel, parseQuota, quotaEvents, quotaRows, summarize } from './lib/quota.mjs';
 import { readArt } from './lib/renderer-source.mjs';
 import { SettingsStore } from './lib/settings.mjs';
@@ -44,14 +47,50 @@ const language = () => resolveLanguage(settings.value.language, appLanguage);
 const ui = () => UI[language()];
 const quotaOptions = () => ({ lowAt: settings.value.quota.lowAt, criticalAt: settings.value.quota.criticalAt, resetSoonMs: settings.value.quota.resetSoonMin * MINUTE });
 
+const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const bridge = new RendererBridge({ onMessage: onPetMessage, log });
+let desktopBackoffIndex = 0;
+let desktopNextTryAt = 0;
+const DESKTOP_BACKOFF_MS = [5000, 15000, 60000, 60000, 60000];
+const DESKTOP_PAUSE_MS = 5 * MINUTE;
+const desktopBridge = new DesktopBridge({ onMessage: onPetMessage, log });
+const desktopHost = new DesktopHost({
+  dataDir,
+  pluginRoot,
+  log,
+  onExit: code => {
+    if (stopping) return;
+    if (code === 0) {
+      desktopBackoffIndex = 0;
+      desktopNextTryAt = Date.now() + 5000;
+      return;
+    }
+    if (desktopBackoffIndex >= DESKTOP_BACKOFF_MS.length) {
+      desktopNextTryAt = Date.now() + DESKTOP_PAUSE_MS;
+      desktopBackoffIndex = 0;
+    } else {
+      desktopNextTryAt = Date.now() + DESKTOP_BACKOFF_MS[desktopBackoffIndex++];
+    }
+  },
+});
+
+function sendTo(session, message) {
+  if (session?.desktop) desktopBridge.post(session, message);
+  else bridge.post(session, message);
+}
+
+function broadcastAll(message) {
+  bridge.broadcast(message);
+  desktopBridge.broadcast(message);
+}
+
 const updater = new Updater({
-  root: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'),
+  root: pluginRoot,
   installedRoot: join(geminiDir, 'config', 'plugins', 'hagemi-pet-agy'),
   log,
-  onChange: update => bridge.broadcast({ t: 'update', update }),
+  onChange: update => broadcastAll({ t: 'update', update }),
   onInstalled: () => {
-    bridge.broadcast({ t: 'react', state: 'happy', gesture: 'hop', burst: 'sparkles' });
+    broadcastAll({ t: 'react', state: 'happy', gesture: 'hop', burst: 'sparkles' });
     // The host's restart_policy: always brings her back with the new modules and renderer.
     setTimeout(shutdown, 1500);
   },
@@ -65,7 +104,7 @@ const brain = new Brain({
   // Comments are paid for by their own model, not by the one selected for the agent.
   getQuotaLevel: () => levelForModel(allBuckets, models.resolve(settings.value.ai.model)?.label || settings.value.ai.model),
   say: (result, trigger) => {
-    bridge.broadcast({ t: 'say', text: result.text, mood: result.mood, ai: result.ai, force: trigger === 'greet' });
+    broadcastAll({ t: 'say', text: result.text, mood: result.mood, ai: result.ai, force: trigger === 'greet' });
     if (process.env.HAGEMI_DEBUG) log(`${trigger}${result.ai ? ' (ai)' : ''}: ${result.text}`);
   },
 });
@@ -79,15 +118,83 @@ function hudRows() {
   return rows;
 }
 
+const lastNotified = new Map();
+let recentWorkResult = null;
+function dispatchNotification(event) {
+  const notification = buildNotification(event, {
+    language: language(),
+    settings: settings.value,
+    focused: presence.visible && presence.focused,
+  });
+  if (!notification) return false;
+  if (event.type !== 'test') {
+    const key = `${notification.conversationId || 'global'}|${notification.kind}`;
+    const now = Date.now();
+    if (now - (lastNotified.get(key) || 0) < 5000) return false;
+    lastNotified.set(key, now);
+  }
+  desktopBridge.broadcast({ t: 'notify', notification });
+  return true;
+}
+
+function workBadgeForState(state, strings) {
+  if (!settings.value.workStatusEnabled) return null;
+  if (facts.waiting) {
+    return {
+      tone: 'waiting',
+      label: strings.work_waiting,
+      conversationId: facts.waitingId || facts.primaryId || null,
+      title: facts.waitingTitle || facts.title || '',
+    };
+  }
+  if (facts.running > 0) {
+    const keyMap = {
+      thinking: 'work_thinking',
+      deepthink: 'work_thinking',
+      reading: 'work_reading',
+      writing: 'work_writing',
+      running: 'work_running',
+      searching: 'work_searching',
+      drawing: 'work_drawing',
+      delegating: 'work_delegating',
+      compacting: 'work_compacting',
+      busy: 'work_busy',
+      swamped: 'work_busy',
+    };
+    const labelKey = keyMap[state] || 'work_thinking';
+    return {
+      tone: 'work',
+      label: strings[labelKey] || strings.work_thinking,
+      conversationId: facts.primaryId || null,
+      title: facts.title || '',
+    };
+  }
+  if (recentWorkResult && Date.now() < recentWorkResult.until) {
+    return {
+      tone: recentWorkResult.tone,
+      label: strings[recentWorkResult.labelKey] || strings.work_done,
+      conversationId: recentWorkResult.conversationId,
+      title: recentWorkResult.title,
+    };
+  }
+  return null;
+}
+
 function publishFacts(force = false) {
   // She naps when neither the agents nor you have done anything for a while.
   const idleMs = Math.min(facts.idleMs || 0, presence.visible ? presence.idleMs : Infinity);
-  const state = chooseState({ ...facts, idleMs }, quota, { resetSoon: isResetSoon(quota, quotaOptions()) });
+  const effectiveFacts = settings.value.workStatusEnabled
+    ? { ...facts, idleMs }
+    : { waiting: false, running: 0, subagents: 0, category: null, idleMs, quietMs: 0, connected: facts.connected };
+  const state = chooseState(effectiveFacts, quota, { resetSoon: isResetSoon(quota, quotaOptions()) });
   if (lastState === 'sleeping' && state !== 'sleeping') moment('wake');
   lastState = state;
   const message = {
     t: 'facts', state, quota: quota.mood === 'empty' ? 'critical' : quota.mood, late: isLate(new Date()),
-    subagents: facts.subagents, stashLevel: quota.level, stashLabel: quota.level == null ? '' : `${Math.round(quota.level * 100)}%`, hud: hudRows(),
+    subagents: settings.value.workStatusEnabled ? facts.subagents : 0,
+    stashLevel: quota.level, stashLabel: quota.level == null ? '' : `${Math.round(quota.level * 100)}%`,
+    hud: hudRows(),
+    workBadge: workBadgeForState(state, ui()),
   };
   const json = JSON.stringify(message);
   if (process.env.HAGEMI_DEBUG && state !== lastLoggedState) {
@@ -96,13 +203,13 @@ function publishFacts(force = false) {
   }
   if (force || json !== lastFactsJson) {
     lastFactsJson = json;
-    bridge.broadcast(message);
-  } else bridge.broadcast({ t: 'heartbeat' });
+    broadcastAll(message);
+  } else broadcastAll({ t: 'heartbeat' });
 }
 
 function act(trigger) {
   const reaction = REACTIONS[trigger]?.react;
-  if (reaction) bridge.broadcast({ t: 'react', ...reaction });
+  if (reaction) broadcastAll({ t: 'react', ...reaction });
 }
 
 function context(extra = {}) {
@@ -129,12 +236,24 @@ function onEvent(event) {
       break;
     case 'turn_end': {
       const trigger = classifyTurnEnd(event);
+      recentWorkResult = {
+        tone: trigger === 'turn_error' || trigger === 'turn_maxed' ? 'error' : 'done',
+        labelKey: trigger === 'turn_error' || trigger === 'turn_maxed' ? 'work_error' : 'work_done',
+        conversationId: event.id || null,
+        title: event.title || '',
+        until: Date.now() + 10000,
+      };
+      setTimeout(() => publishFacts(), 10500).unref?.();
+      dispatchNotification({ ...event, type: trigger, agentText: event.agentText });
       moment(trigger, {
         title: event.title, toolCount: event.toolCount, durationMin: Math.round((event.durationMs || 0) / MINUTE),
         userText: event.userText, agentText: event.agentText, vars: { count: event.toolCount || 0 },
       });
       break;
     }
+    case 'waiting_start':
+      dispatchNotification({ type: 'waiting_start', id: event.id, title: event.title });
+      break;
     case 'tool':
       lastToolAt = Date.now();
       if (event.category === 'drawing') moment('drawing');
@@ -222,7 +341,7 @@ function greet() {
   const now = new Date();
   const fest = festival(now);
   const scene = fest || `greet_${timeOfDay(now)}`;
-  bridge.broadcast({ t: 'react', state: scene, ms: 4200, gesture: 'hop', burst: 'sparkles' });
+  broadcastAll({ t: 'react', state: scene, ms: 4200, gesture: 'hop', burst: 'sparkles' });
   brain.consider('greet', {}, { line: scene }).catch(() => {});
 }
 
@@ -240,15 +359,16 @@ let greeted = false;
 function onPetMessage(message, session) {
   switch (message.type) {
     case 'ready':
-      bridge.post(session, { t: 'hello', settings: settings.value, ui: ui() });
-      bridge.post(session, { t: 'update', update: updater.state });
+      if (session?.desktop) desktopBackoffIndex = 0;
+      sendTo(session, { t: 'hello', settings: settings.value, ui: ui() });
+      sendTo(session, { t: 'update', update: updater.state });
       lastFactsJson = '';
       publishFacts(true);
       sendModelChoices(session);
       if (!greeted) { greeted = true; setTimeout(greet, 900); }
       break;
     case 'panelOpened':
-      bridge.post(session, { t: 'update', update: updater.state });
+      sendTo(session, { t: 'update', update: updater.state });
       break;
     case 'update_check':
       updater.check();
@@ -257,12 +377,12 @@ function onPetMessage(message, session) {
       updater.install();
       break;
     case 'art':
-      bridge.post(session, { t: 'art', name: message.name, data: readArt(message.name) });
+      sendTo(session, { t: 'art', name: message.name, data: readArt(message.name) });
       break;
     case 'settings': {
       const before = settings.value.language;
       settings.patch(message.patch);
-      if (settings.value.language !== before) bridge.broadcast({ t: 'settings', settings: settings.value, ui: ui() });
+      if (settings.value.language !== before) broadcastAll({ t: 'settings', settings: settings.value, ui: ui() });
       publishFacts();
       break;
     }
@@ -271,10 +391,28 @@ function onPetMessage(message, session) {
       if (message.language) appLanguage = message.language;
       break;
     case 'remount':
-      bridge.remount(session);
+      if (!session?.desktop) bridge.remount(session);
       break;
     case 'talk':
       brain.consider('talk', context(), { force: true, line: 'talk_offline' }).catch(() => {});
+      break;
+    case 'activity':
+      if (message.kind === 'roam' || message.kind === 'play') {
+        brain.consider(message.kind, {}, { force: true }).catch(() => {});
+      }
+      break;
+    case 'notify_test':
+      dispatchNotification({ type: 'test', id: facts.primaryId || null, title: facts.title || '' });
+      break;
+    case 'focus_conversation':
+      bridge.focusConversation(message.conversationId);
+      if (!session?.desktop) {
+        desktopBridge.broadcast({ t: 'focus_conversation', conversationId: message.conversationId || null, title: message.title || '' });
+      }
+      break;
+    case 'notification_clicked':
+      bridge.focusConversation(message.conversationId);
+      broadcastAll({ t: 'react', gesture: 'hop', burst: 'sparkles' });
       break;
     case 'touch': {
       const known = ['poke', 'pet', 'coax', 'annoyed', 'puffed', 'redhot', 'sulk', 'shaken', 'grab'];
@@ -292,13 +430,37 @@ function onPetMessage(message, session) {
 async function sendModelChoices(session) {
   try {
     const configs = await models.refresh();
-    bridge.post(session, { t: 'models', models: configs.map(c => c.label), usage: budget.usage });
+    sendTo(session, { t: 'models', models: configs.map(c => c.label), usage: budget.usage });
   } catch { /* The picker falls back to a free-text field. */ }
+}
+
+let desktopQueue = Promise.resolve();
+function syncDesktopFallback() {
+  if (process.env.HAGEMI_NO_DESKTOP === '1' || stopping) return desktopQueue;
+  desktopQueue = desktopQueue.then(async () => {
+    if (stopping) return;
+    if (bridge.sessions.size > 0) {
+      if (desktopHost.running || desktopBridge.server) {
+        await desktopHost.stop();
+        await desktopBridge.stop();
+        log('cdp connected, stopped desktop overlay');
+      }
+      return;
+    }
+    if (!desktopHost.running && Date.now() >= desktopNextTryAt) {
+      const { url } = await desktopBridge.start();
+      const started = desktopHost.start(url);
+      if (started) log('desktop overlay started');
+      else desktopNextTryAt = Date.now() + 60000;
+    }
+  }).catch(error => log(`desktop overlay: ${error.message}`));
+  return desktopQueue;
 }
 
 const timers = [setInterval(pollQuota, 60000), setInterval(pollModel, 20000), setInterval(ambient, 5 * MINUTE)];
 const checkUpdates = () => { if (settings.value.autoCheckUpdates) updater.check(); };
 timers.push(setTimeout(checkUpdates, 15000), setInterval(checkUpdates, UPDATE_INTERVAL_MS));
+timers.push(setTimeout(syncDesktopFallback, 1500), setInterval(syncDesktopFallback, 10000));
 for (const timer of timers) timer.unref?.();
 pollModel().then(pollQuota);
 monitor.start();
@@ -316,6 +478,8 @@ async function shutdown() {
   monitor.stop();
   const force = setTimeout(() => process.exit(0), 2000);
   force.unref?.();
+  await desktopHost.stop();
+  await desktopBridge.stop();
   await bridge.stop();
   process.exit(0);
 }

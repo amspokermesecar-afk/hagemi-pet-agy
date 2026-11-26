@@ -205,6 +205,9 @@ HAGEMI.createFx = function createFx(backCanvas, frontCanvas) {
     dust(x, y, n = 10) {
       for (let i = 0; i < n; i++) emit('puff', x + rand(-110, 110), y + 230, { vx: rand(-80, 80), vy: rand(-30, -5), ttl: rand(0.4, 0.8), size: rand(9, 18), color: 'rgba(190,180,230,0.6)', drag: 1.6 });
     },
+    step(x, y, n = 2) {
+      for (let i = 0; i < n; i++) emit('puff', x + rand(-22, 22), y + rand(-6, 8), { vx: rand(-45, 45), vy: rand(-26, -8), ttl: rand(0.28, 0.52), size: rand(7, 13), color: 'rgba(205,196,242,0.52)', drag: 2.0, front: false });
+    },
     fish(x, y, n = 16) {
       for (let i = 0; i < n; i++) emit('fish', x + rand(-190, 190), y - 340 + rand(-40, 20), { vy: rand(40, 170), ay: 340, ttl: rand(0.9, 1.5), size: rand(44, 66), spin: rand(-4, 4), angle: rand(-1, 1), flip: i % 2 === 0, front: i % 2 === 0 });
     },

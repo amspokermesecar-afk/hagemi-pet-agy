@@ -118,7 +118,28 @@ You need the Antigravity **desktop app**. She does not appear in the CLI, the ID
 Install her with the Antigravity CLI:
 
 ```bash
-agy plugin install https://github.com/KCFindstr/hagemi-pet-agy
+agy plugin install https://github.com/Lihyuu/hagemi-pet-agy
+```
+
+### Fork Enhancements & Desktop Overlay Setup
+
+This fork ([Lihyuu/hagemi-pet-agy](https://github.com/Lihyuu/hagemi-pet-agy)) extends [KCFindstr/hagemi-pet-agy](https://github.com/KCFindstr/hagemi-pet-agy) with:
+
+- **Standalone transparent always-on-top desktop overlay (Antigravity v2.34+ fallback)**: Automatically launches a click-through transparent desktop pet window when Antigravity's internal CDP debugging port is unavailable.
+- **Autonomous idle / roam / play cycle & clickable work-status pill**: Naturally strolls, trots, plays, and shows a clickable status pill for the active conversation; right-click includes **Stroll around** to walk on demand.
+- **Native system notifications**: Sends OS notifications when a task finishes, fails, or waits for confirmation, jumping back to the conversation on click.
+- **Articulated 3/4 walking legs & responsive 2.5D gaze tracking**: Native-refresh bone-weighted walking legs, iris-lead 2.5D head parallax, and global OS cursor tracking.
+
+On **Antigravity v2.34+**, run the bundled helper once to install the Electron desktop overlay runtime (automatically falls back to `npmmirror` if the default Electron mirror fails):
+
+```powershell
+# Windows (PowerShell)
+node "$env:USERPROFILE\.gemini\config\plugins\hagemi-pet-agy\tools\setup-desktop-runtime.mjs"
+```
+
+```bash
+# macOS / Linux
+node ~/.gemini/config/plugins/hagemi-pet-agy/tools/setup-desktop-runtime.mjs
 ```
 
 She appears in the bottom right within about 30 seconds. If she does not, restart Antigravity once.
