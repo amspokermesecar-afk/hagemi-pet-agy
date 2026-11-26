@@ -129,7 +129,7 @@ app.whenReady().then(() => {
   win.setIgnoreMouseEvents(true, { forward: true });
 
   win.once('ready-to-show', () => {
-    if (win && !win.isDestroyed()) {
+    if (win && !win.isDestroyed() && !hostMinimized) {
       win.showInactive();
       applyTopLevel({ moveTop: true });
     }
@@ -147,11 +147,12 @@ app.whenReady().then(() => {
   let lastCursorMoveAt = Date.now();
   let cursorFollow = true;
   let petHidden = false;
+  let hostMinimized = false;
   let systemLocked = false;
   let cursorTimer = null;
 
   function computeCursorDelay(now) {
-    if (petHidden || systemLocked) return null;
+    if (petHidden || hostMinimized || systemLocked) return null;
     const idleSec = powerMonitor.getSystemIdleTime();
     if (idleSec >= 30) return 500;
     const stillMs = Math.max(0, now - lastCursorMoveAt);
@@ -188,8 +189,8 @@ app.whenReady().then(() => {
 
   powerMonitor.on('lock-screen', () => { systemLocked = true; scheduleCursorPoll(); });
   powerMonitor.on('suspend', () => { systemLocked = true; scheduleCursorPoll(); });
-  powerMonitor.on('unlock-screen', () => { systemLocked = false; lastCursorMoveAt = Date.now(); applyTopLevel({ moveTop: true }); scheduleCursorPoll(50); });
-  powerMonitor.on('resume', () => { systemLocked = false; lastCursorMoveAt = Date.now(); applyTopLevel({ moveTop: true }); scheduleCursorPoll(50); });
+  powerMonitor.on('unlock-screen', () => { systemLocked = false; lastCursorMoveAt = Date.now(); if (!hostMinimized) applyTopLevel({ moveTop: true }); scheduleCursorPoll(hostMinimized ? null : 50); });
+  powerMonitor.on('resume', () => { systemLocked = false; lastCursorMoveAt = Date.now(); if (!hostMinimized) applyTopLevel({ moveTop: true }); scheduleCursorPoll(hostMinimized ? null : 50); });
   scheduleCursorPoll(33);
   win.on('closed', () => clearTimeout(cursorTimer));
 
@@ -224,8 +225,24 @@ app.whenReady().then(() => {
   ipcMain.on('hagemi:cursor-tracking', (_event, payload = {}) => {
     if (typeof payload.followCursor === 'boolean') cursorFollow = payload.followCursor;
     if (typeof payload.hidden === 'boolean') petHidden = payload.hidden;
-    if (!petHidden && !systemLocked) lastCursorMoveAt = Date.now();
-    scheduleCursorPoll(petHidden || systemLocked ? null : 50);
+    if (!petHidden && !hostMinimized && !systemLocked) lastCursorMoveAt = Date.now();
+    scheduleCursorPoll(petHidden || hostMinimized || systemLocked ? null : 50);
+  });
+
+  ipcMain.on('hagemi:host-minimized', (_event, minimized) => {
+    const next = Boolean(minimized);
+    if (next === hostMinimized) return;
+    hostMinimized = next;
+    if (!win || win.isDestroyed()) return;
+    if (hostMinimized) {
+      scheduleCursorPoll();
+      win.hide();
+    } else {
+      win.showInactive();
+      applyTopLevel({ moveTop: true });
+      lastCursorMoveAt = Date.now();
+      scheduleCursorPoll(50);
+    }
   });
 
   ipcMain.handle('hagemi:displays', () => {

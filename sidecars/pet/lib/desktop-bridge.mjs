@@ -174,6 +174,9 @@ html, body {
       window.__hagemiDesktop?.focusConversation?.(msg);
       return;
     }
+    if (msg.t === 'host_minimized') {
+      window.__hagemiDesktop?.setHostMinimized?.(!!msg.minimized);
+    }
     deliver(msg);
   };
 

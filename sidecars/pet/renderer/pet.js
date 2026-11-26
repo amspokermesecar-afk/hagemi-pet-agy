@@ -48,7 +48,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
 
   let settings = {
     language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced', renderMode: 'auto',
-    followCursor: true, desktopDisplay: 'primary', alwaysOnTopLevel: 'screen-saver',
+    followCursor: true, desktopDisplay: 'primary', alwaysOnTopLevel: 'screen-saver', hideWhenHostMinimized: true,
     roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
     notifications: { enabled: true, onDone: true, onWaiting: true, whenFocused: true }, position: null,
   };
@@ -62,7 +62,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   let x = 0, y = 0, vx = 0, vy = 0;
   let dragging = null;
   let lastOverPet = false, lastOverBubble = false, lastOverPanel = false, lastOverWork = false, lastInteractive = null;
-  let desktopIdleSec = 0, desktopLocked = false;
+  let desktopIdleSec = 0, desktopLocked = false, hostMinimized = false;
   const abort = new AbortController();
   const listen = (target, type, handler, extra = {}) => target.addEventListener(type, handler, { signal: abort.signal, ...extra });
 
@@ -567,6 +567,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
         ['floating', ui.level_floating || 'Floating'],
         ['normal', ui.level_normal || 'Normal'],
       ], value => patch({ alwaysOnTopLevel: value })));
+      field(ui.hideWhenHostMinimized || 'Auto-hide when Antigravity is minimized', check(s.hideWhenHostMinimized !== false, value => patch({ hideWhenHostMinimized: value })));
     }
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
     field(ui.work_status_enabled || 'Work status linkage', check(s.workStatusEnabled !== false, value => patch({ workStatusEnabled: value })));
@@ -861,8 +862,8 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const presence = () => {
     const localIdleMs = Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt));
     const idleMs = options.desktop ? Math.min(localIdleMs, Math.round(desktopIdleSec * 1000)) : localIdleMs;
-    const focused = options.desktop ? (!document.hidden && !desktopLocked && desktopIdleSec < 300) : document.hasFocus();
-    send({ type: 'presence', desktop: Boolean(options.desktop), visible: !document.hidden && !desktopLocked, focused, locked: desktopLocked, idleMs, language: navigator.language });
+    const focused = options.desktop ? (!document.hidden && !desktopLocked && !hostMinimized && desktopIdleSec < 300) : document.hasFocus();
+    send({ type: 'presence', desktop: Boolean(options.desktop), visible: !document.hidden && !desktopLocked && !hostMinimized, focused, locked: desktopLocked, idleMs, language: navigator.language });
   };
   listen(document, 'visibilitychange', presence);
   listen(window, 'focus', presence);
@@ -887,7 +888,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
   function frame(now) {
     raf = requestAnimationFrame(frame);
     if (!host.isConnected) { dispose(); return; }
-    if (document.hidden || stage.style.display === 'none' || desktopLocked) { lastFrame = now; return; }
+    if (document.hidden || stage.style.display === 'none' || desktopLocked || hostMinimized) { lastFrame = now; return; }
     const gazeMoving = Math.abs(gazeX - gazeGoalX) > 0.015 || Math.abs(gazeY - gazeGoalY) > 0.015;
     const lively = animator.busy || dragging || roam || Math.hypot(vx, vy) > 3 || speech || fade < 1 || gazeMoving;
     const baseCap = settings.animation === 'saver' ? 20 : settings.animation === 'smooth' || lively ? 0 : 30;
@@ -1162,6 +1163,11 @@ HAGEMI.boot = async function boot(send, options = {}) {
       case 'models':
         modelChoices = message.models || modelChoices;
         usage = message.usage || usage;
+        break;
+      case 'host_minimized':
+        hostMinimized = !!message.minimized;
+        if (hostMinimized) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); }
+        presence();
         break;
       case 'heartbeat':
         applyVisibility();

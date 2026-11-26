@@ -10,6 +10,7 @@ import { DesktopBridge } from './lib/desktop-bridge.mjs';
 import { DesktopHost } from './lib/desktop-host.mjs';
 import { ambientTriggers, chooseState, classifyTurnEnd, festival, isLate, modelFamily, REACTIONS, timeOfDay } from './lib/director.mjs';
 import { HostFocusChecker } from './lib/host-focus.mjs';
+import { HostWindowWatcher } from './lib/host-window.mjs';
 import { fill, resolveLanguage, UI } from './lib/lines.mjs';
 import { LanguageServer } from './lib/ls-client.mjs';
 import { Monitor } from './lib/monitor.mjs';
@@ -108,6 +109,22 @@ updater.local().then(local => updater.publish(local));
 const hostFocus = new HostFocusChecker({
   getAllowedPids: () => [desktopHost.pid],
 });
+let hostMinimized = false;
+const hostWindowWatcher = new HostWindowWatcher({
+  parentPid: process.pid,
+  log,
+  onStateChange: state => {
+    const next = state === 'minimized';
+    if (next === hostMinimized) return;
+    hostMinimized = next;
+    desktopBridge.broadcast({ t: 'host_minimized', minimized: hostMinimized });
+    if (process.env.HAGEMI_DEBUG) log(`host window: ${state}`);
+  },
+});
+
+function syncHostWindowWatcher() {
+  hostWindowWatcher.setEnabled(Boolean(!stopping && desktopHost.running && settings.value.hideWhenHostMinimized !== false));
+}
 
 async function resolveHostFocus() {
   if (!presence.visible) return false;
@@ -440,6 +457,7 @@ function onPetMessage(message, session) {
       if (session?.desktop) desktopBackoffIndex = 0;
       sendTo(session, { t: 'hello', settings: settings.value, ui: ui() });
       sendTo(session, { t: 'update', update: updater.state });
+      if (session?.desktop) sendTo(session, { t: 'host_minimized', minimized: hostMinimized });
       lastFactsJson = '';
       publishFacts(true);
       sendModelChoices(session);
@@ -463,9 +481,11 @@ function onPetMessage(message, session) {
     case 'settings': {
       const beforeLang = settings.value.language;
       const beforeMode = settings.value.renderMode;
+      const beforeAutoHide = settings.value.hideWhenHostMinimized;
       settings.patch(message.patch);
       if (settings.value.language !== beforeLang) broadcastAll({ t: 'settings', settings: settings.value, ui: ui() });
       if (settings.value.renderMode !== beforeMode) syncDesktopFallback();
+      if (settings.value.hideWhenHostMinimized !== beforeAutoHide) syncHostWindowWatcher();
       publishFacts();
       break;
     }
@@ -543,6 +563,7 @@ function syncDesktopFallback() {
     await bridge.setEnabled(mode !== 'desktop');
     if (mode === 'cdp' || bridge.sessions.size > 0) {
       if (desktopHost.running || desktopBridge.server) {
+        hostWindowWatcher.setEnabled(false);
         await desktopHost.stop();
         await desktopBridge.stop();
         log(mode === 'cdp' ? 'cdp-only mode, stopped desktop overlay' : 'cdp connected, stopped desktop overlay');
@@ -555,6 +576,7 @@ function syncDesktopFallback() {
       if (started) log('desktop overlay started');
       else desktopNextTryAt = Date.now() + 60000;
     }
+    syncHostWindowWatcher();
   }).catch(error => log(`desktop overlay: ${error.message}`));
   return desktopQueue;
 }
@@ -583,6 +605,7 @@ async function shutdown() {
   clearInterval(keepAlive);
   clearTimeout(quotaTimer);
   clearTimeout(turnQuotaTimer);
+  hostWindowWatcher.stop();
   monitor.stop();
   const force = setTimeout(() => process.exit(0), 2000);
   force.unref?.();
