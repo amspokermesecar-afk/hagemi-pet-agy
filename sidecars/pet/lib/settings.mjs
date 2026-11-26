@@ -9,7 +9,7 @@ export const DEFAULTS = Object.freeze({
   renderMode: 'auto',
   followCursor: true,
   desktopDisplay: 'primary',
-  alwaysOnTopLevel: 'floating',
+  alwaysOnTopLevel: 'screen-saver',
   roamEnabled: true,
   workStatusEnabled: true,
   autoCheckUpdates: true,
