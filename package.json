@@ -6,7 +6,7 @@
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "author": "KCFindstr",
-  "repository": { "type": "git", "url": "https://github.com/Lihyuu/hagemi-pet-agy.git" },
+  "repository": { "type": "git", "url": "https://github.com/amspokermesecar-afk/hagemi-pet-agy.git" },
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",

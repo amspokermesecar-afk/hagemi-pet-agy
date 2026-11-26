@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
-export const DEFAULT_REPO_SLUG = 'Lihyuu/hagemi-pet-agy';
+export const DEFAULT_REPO_SLUG = 'amspokermesecar-afk/hagemi-pet-agy';
 const REPO_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 export const UPDATE_REPO = `https://github.com/${DEFAULT_REPO_SLUG}.git`;
 const SHA = /^[a-f0-9]{40}$/;
