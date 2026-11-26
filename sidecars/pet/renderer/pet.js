@@ -509,6 +509,9 @@ HAGEMI.boot = async function boot(send, options = {}) {
     close.addEventListener('click', closePanel);
     updateCard = make('div', 'update-card', panel);
     renderUpdate();
+    make('div', 'panel-note', panel).textContent = options.desktop
+      ? (ui.mode_badge_desktop || 'Current mode: Desktop overlay')
+      : (ui.mode_badge_cdp || 'Current mode: App window (CDP)');
     const section = title => { make('div', 'panel-section', panel).textContent = title; };
     const field = (label, control) => {
       const row = make('label', 'field', panel);
@@ -550,31 +553,36 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.size || 'Size', select(s.size, [['xs', ui.size_xs], ['s', ui.size_s], ['m', ui.size_m], ['l', ui.size_l], ['xl', ui.size_xl]], value => patch({ size: value })));
     field(ui.animation || 'Animation', select(s.animation, [['smooth', ui.animation_smooth], ['balanced', ui.animation_balanced], ['saver', ui.animation_saver]], value => patch({ animation: value })));
     field(ui.renderMode || 'Display mode', select(s.renderMode || 'auto', [['auto', ui.renderMode_auto || 'Auto'], ['desktop', ui.renderMode_desktop || 'Desktop overlay only'], ['cdp', ui.renderMode_cdp || 'App window only (CDP)']], value => patch({ renderMode: value })));
+    if ((s.renderMode || 'auto') === 'cdp') {
+      make('div', 'panel-note', panel).textContent = ui.renderMode_cdp_hint || 'Tip: if Antigravity disables CDP later, switch back to Auto.';
+    }
     field(ui.chattiness || 'Chattiness', select(s.chattiness, [['quiet', ui.chattiness_quiet], ['normal', ui.chattiness_normal], ['chatty', ui.chattiness_chatty]], value => patch({ chattiness: value })));
     field(ui.followCursor || 'Watch the cursor', check(s.followCursor, value => patch({ followCursor: value })));
-    if (options.desktop) {
-      const displayChoices = [
-        ['primary', ui.desktopDisplay_primary || 'Primary monitor'],
-        ['cursor', ui.desktopDisplay_cursor || 'Follow cursor monitor'],
-        ...desktopDisplays.map(d => [
-          d.id,
-          (ui.desktopDisplay_item || 'Monitor {index} ({size})').replace('{index}', String(d.index)).replace('{size}', `${d.width}x${d.height}`),
-        ]),
-      ];
-      field(ui.desktopDisplay || 'Monitor (desktop overlay)', select(s.desktopDisplay || 'primary', displayChoices, value => patch({ desktopDisplay: value })));
-      field(ui.alwaysOnTopLevel || 'Always-on-top level', select(s.alwaysOnTopLevel || 'screen-saver', [
-        ['screen-saver', ui.level_screen_saver || 'Topmost (recommended on Windows)'],
-        ['floating', ui.level_floating || 'Floating'],
-        ['normal', ui.level_normal || 'Normal'],
-      ], value => patch({ alwaysOnTopLevel: value })));
-      field(ui.hideWhenHostMinimized || 'Auto-hide when Antigravity is minimized', check(s.hideWhenHostMinimized !== false, value => patch({ hideWhenHostMinimized: value })));
-    }
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
     field(ui.work_status_enabled || 'Work status linkage', check(s.workStatusEnabled !== false, value => patch({ workStatusEnabled: value })));
     field(ui.autoCheckUpdates, check(s.autoCheckUpdates, value => patch({ autoCheckUpdates: value })));
     field(ui.updateCooldownHours || 'Auto-update cooldown (hours)', number(s.updateCooldownHours ?? 24, 0, 168, value => patch({ updateCooldownHours: value })));
     field(ui.quotaHoverDelayMs || 'Quota hover delay (ms, 0 = instant)', number(s.quotaHoverDelayMs, 0, 10000, value => patch({ quotaHoverDelayMs: value })));
     field(ui.mute || 'Mute comments', check(s.muted, value => patch({ muted: value })));
+    section(ui.section_desktop || 'Desktop overlay');
+    if (!options.desktop) {
+      make('div', 'panel-note', panel).textContent = ui.desktop_only_hint || 'Applies when running in Desktop overlay mode.';
+    }
+    const displayChoices = [
+      ['primary', ui.desktopDisplay_primary || 'Primary monitor'],
+      ['cursor', ui.desktopDisplay_cursor || 'Follow cursor monitor'],
+      ...desktopDisplays.map(d => [
+        d.id,
+        (ui.desktopDisplay_item || 'Monitor {index} ({size})').replace('{index}', String(d.index)).replace('{size}', `${d.width}x${d.height}`),
+      ]),
+    ];
+    field(ui.desktopDisplay || 'Monitor (desktop overlay)', select(s.desktopDisplay || 'primary', displayChoices, value => patch({ desktopDisplay: value })));
+    field(ui.alwaysOnTopLevel || 'Always-on-top level', select(s.alwaysOnTopLevel || 'screen-saver', [
+      ['screen-saver', ui.level_screen_saver || 'Topmost (recommended on Windows)'],
+      ['floating', ui.level_floating || 'Floating'],
+      ['normal', ui.level_normal || 'Normal'],
+    ], value => patch({ alwaysOnTopLevel: value })));
+    field(ui.hideWhenHostMinimized || 'Auto-hide when Antigravity is minimized', check(s.hideWhenHostMinimized !== false, value => patch({ hideWhenHostMinimized: value })));
     const notif = s.notifications || {};
     section(ui.section_notifications || 'System notifications');
     field(ui.notify_enabled || 'Enable system notifications', check(notif.enabled !== false, value => patch({ notifications: { enabled: value } })));
@@ -1164,6 +1172,30 @@ HAGEMI.boot = async function boot(send, options = {}) {
         modelChoices = message.models || modelChoices;
         usage = message.usage || usage;
         break;
+      case 'notify': {
+        const n = message.notification;
+        if (!n || options.desktop) break;
+        const showWebNotification = () => {
+          try {
+            const item = new Notification(n.title || 'Hagemi Pet', { body: n.body || '' });
+            item.onclick = () => {
+              window.focus?.();
+              send({ type: 'notification_clicked', conversationId: n.conversationId || null, title: n.conversationTitle || '' });
+            };
+          } catch { /* Notification blocked or unavailable. */ }
+        };
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          showWebNotification();
+        } else if (typeof Notification !== 'undefined' && Notification.permission === 'default' && n.kind === 'test' && typeof Notification.requestPermission === 'function') {
+          Notification.requestPermission().then(perm => {
+            if (perm === 'granted') showWebNotification();
+            else speechQueue.push({ text: n.body || n.title || 'Notification ready', mood: 'happy', ai: false, ms: 4000, queuedAt: performance.now() });
+          }).catch(() => {});
+        } else if (n.kind === 'test') {
+          speechQueue.push({ text: n.body || n.title || 'Notification ready', mood: 'happy', ai: false, ms: 4000, queuedAt: performance.now() });
+        }
+        break;
+      }
       case 'host_minimized':
         hostMinimized = !!message.minimized;
         if (hostMinimized) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); }

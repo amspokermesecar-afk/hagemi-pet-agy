@@ -100,9 +100,10 @@ export class Brain {
   }
 
   // Why the model should not be used for this moment, or null to go ahead.
-  aiBlocked(trigger, reaction, forced = false) {
+  aiBlocked(trigger, reaction, forced = false, allowAi = true) {
     const { ai, chattiness } = this.getSettings();
     if (!ai.enabled) return 'disabled';
+    if (allowAi === false || reaction.ai === false) return 'not-worth-it';
     if (!forced && !reaction.ai) return 'not-worth-it';
     if (!forced && reaction.salience < (CHATTINESS[chattiness] || CHATTINESS.normal).aiFloor) return 'not-salient';
     if (this.inFlight) return 'in-flight';
@@ -187,7 +188,7 @@ export class Brain {
     }
   }
 
-  async consider(trigger, context = {}, { force = false, line = null } = {}) {
+  async consider(trigger, context = {}, { force = false, line = null, allowAi = true } = {}) {
     const reaction = REACTIONS[trigger] || { salience: 0.5 };
     const settings = this.getSettings();
     const now = this.now();
@@ -204,7 +205,7 @@ export class Brain {
     const canned = pickLine(language, scriptKey, context.vars);
     this.lastBubbleAt = now;
     let result = null;
-    let blocked = this.aiBlocked(trigger, reaction, force);
+    let blocked = this.aiBlocked(trigger, reaction, force, allowAi);
     if (!blocked && settings.ai.onlyWhenFocused && typeof this.isHostFocused === 'function') {
       const hostFocused = await Promise.resolve(this.isHostFocused()).catch(() => null);
       if (hostFocused === false) blocked = 'unfocused';

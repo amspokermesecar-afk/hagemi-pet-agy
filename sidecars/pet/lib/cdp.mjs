@@ -89,6 +89,8 @@ export class RendererBridge {
     this.consecutiveMisses = 0;
     this.enabled = true;
     this.timer = null;
+    this.firstTickDone = false;
+    this.firstTickPromise = null;
   }
 
   async targets() {
@@ -225,8 +227,15 @@ export class RendererBridge {
 
   start() {
     this.stopped = false;
-    if (!this.enabled) return;
-    this.tick().finally(() => this.scheduleNext());
+    if (!this.enabled) {
+      this.firstTickDone = true;
+      return;
+    }
+    this.firstTickDone = false;
+    this.firstTickPromise = this.tick().finally(() => {
+      this.firstTickDone = true;
+      this.scheduleNext();
+    });
   }
 
   async setEnabled(enabled) {

@@ -51,7 +51,7 @@ export const REACTIONS = {
   friday: { salience: 0.46, cooldownMin: 1440, ai: true, react: { gesture: 'hop' } },
   wake: { salience: 0.2, cooldownMin: 20, react: { state: 'yawn', ms: 2400 } },
   // Keep idle chatter scripted so she never sends unattended background model requests.
-  idle_ponder: { salience: 0.36, cooldownMin: 25, react: { gesture: 'lookAround' } },
+  idle_ponder: { salience: 0.36, cooldownMin: 25, ai: false, react: { gesture: 'lookAround' } },
   greet: { salience: 1, cooldownMin: 0, urgent: true, react: { gesture: 'hop', burst: 'sparkles' } },
   poke: { salience: 0.9, cooldownMin: 0.05, urgent: true },
   annoyed: { salience: 0.9, cooldownMin: 0.1, urgent: true },
@@ -62,8 +62,8 @@ export const REACTIONS = {
   pet: { salience: 0.75, cooldownMin: 0.3, urgent: true },
   shaken: { salience: 0.9, cooldownMin: 0.2, urgent: true },
   grab: { salience: 0.5, cooldownMin: 1, urgent: true },
-  roam: { salience: 0.45, cooldownMin: 3, urgent: true },
-  play: { salience: 0.5, cooldownMin: 1, urgent: true },
+  roam: { salience: 0.45, cooldownMin: 3, urgent: true, ai: false },
+  play: { salience: 0.5, cooldownMin: 1, urgent: true, ai: false },
 };
 
 export const CHATTINESS = {

@@ -216,6 +216,20 @@ test('idle_ponder stays scripted and never calls the model', async () => {
   assert.equal(said.length, 1);
 });
 
+test('roam and play activities stay scripted even when forced, while double-click talk still allows AI', async () => {
+  const { brain, calls, said } = harness({ settings: { chattiness: 'chatty' } });
+  const roam = await brain.consider('roam', context, { force: true });
+  const play = await brain.consider('play', context, { force: true });
+  assert.equal(modelCalls(calls).length, 0, 'roam/play must never call GetModelResponse');
+  assert.equal(roam.ai, false);
+  assert.equal(play.ai, false);
+  assert.equal(said.length, 2);
+
+  const talk = await brain.consider('talk', context, { force: true, line: 'talk_offline' });
+  assert.equal(modelCalls(calls).length, 1, 'explicit double-click talk can still use AI');
+  assert.equal(talk.ai, true);
+});
+
 test('real host focus check blocks AI calls when another app is active in desktop mode', async () => {
   let hostActive = false;
   let checks = 0;

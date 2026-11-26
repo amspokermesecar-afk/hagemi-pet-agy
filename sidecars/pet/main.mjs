@@ -67,6 +67,7 @@ const desktopHost = new DesktopHost({
   pluginRoot,
   log,
   onExit: code => {
+    syncHostWindowWatcher();
     if (stopping) return;
     if (code === 0) {
       desktopBackoffIndex = 0;
@@ -178,7 +179,11 @@ async function dispatchNotification(event) {
     if (now - (lastNotified.get(key) || 0) < 5000) return false;
     lastNotified.set(key, now);
   }
-  desktopBridge.broadcast({ t: 'notify', notification });
+  if (desktopBridge.hasClients()) {
+    desktopBridge.broadcast({ t: 'notify', notification });
+  } else {
+    bridge.broadcast({ t: 'notify', notification });
+  }
   return true;
 }
 
@@ -518,7 +523,7 @@ function onPetMessage(message, session) {
       break;
     case 'activity':
       if (message.kind === 'roam' || message.kind === 'play') {
-        brain.consider(message.kind, {}, { force: true }).catch(() => {});
+        brain.consider(message.kind, {}, { force: true, allowAi: false }).catch(() => {});
       }
       break;
     case 'notify_test':
@@ -555,18 +560,28 @@ async function sendModelChoices(session) {
 }
 
 let desktopQueue = Promise.resolve();
+let cdpOnlyHintLogged = false;
 function syncDesktopFallback() {
   if (stopping) return desktopQueue;
   desktopQueue = desktopQueue.then(async () => {
     if (stopping) return;
     const mode = process.env.HAGEMI_NO_DESKTOP === '1' ? 'cdp' : (settings.value.renderMode || 'auto');
     await bridge.setEnabled(mode !== 'desktop');
+    if (mode === 'auto' && bridge.firstTickPromise && !bridge.firstTickDone) {
+      await bridge.firstTickPromise.catch(() => {});
+    }
     if (mode === 'cdp' || bridge.sessions.size > 0) {
       if (desktopHost.running || desktopBridge.server) {
         hostWindowWatcher.setEnabled(false);
         await desktopHost.stop();
         await desktopBridge.stop();
         log(mode === 'cdp' ? 'cdp-only mode, stopped desktop overlay' : 'cdp connected, stopped desktop overlay');
+      }
+      if (mode === 'cdp' && bridge.sessions.size === 0 && bridge.consecutiveMisses >= 2 && !cdpOnlyHintLogged) {
+        cdpOnlyHintLogged = true;
+        log('cdp-only mode: waiting for DevToolsActivePort (set renderMode to "auto" or "desktop" in settings.json if CDP is unavailable)');
+      } else if (bridge.sessions.size > 0) {
+        cdpOnlyHintLogged = false;
       }
       return;
     }
@@ -581,10 +596,11 @@ function syncDesktopFallback() {
   return desktopQueue;
 }
 
+const initialMode = process.env.HAGEMI_NO_DESKTOP === '1' ? 'cdp' : (settings.value.renderMode || 'auto');
 const timers = [setInterval(pollModel, 20000), setInterval(ambient, 5 * MINUTE)];
 const checkUpdates = () => { if (settings.value.autoCheckUpdates) updater.check({ manual: false }); };
 timers.push(setTimeout(checkUpdates, 15000), setInterval(checkUpdates, UPDATE_INTERVAL_MS));
-timers.push(setTimeout(syncDesktopFallback, 1500), setInterval(syncDesktopFallback, 10000));
+timers.push(setTimeout(syncDesktopFallback, initialMode === 'desktop' ? 500 : 3500), setInterval(syncDesktopFallback, 10000));
 for (const timer of timers) timer.unref?.();
 pollModel().then(pollQuota);
 monitor.start();

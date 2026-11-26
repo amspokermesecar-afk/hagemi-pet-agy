@@ -32,7 +32,12 @@ export function findElectronExecutable({ dataDir = '', pluginRoot = '', env = pr
 
   try {
     const cmd = platform === 'win32' ? 'where.exe' : 'which';
-    const out = execFileSync(cmd, ['electron'], { encoding: 'utf8', windowsHide: true, timeout: 2000 }).trim();
+    const out = execFileSync(cmd, ['electron'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
     const first = out.split(/\r?\n/).find(line => line.trim() && existsSync(line.trim()));
     if (first) return first.trim();
   } catch {

@@ -113,9 +113,13 @@ test('electron-main adapts cursor polling and listens for screen lock/unlock', (
   const root = join(import.meta.dirname, '..');
   const mainSrc = readFileSync(join(root, 'sidecars', 'pet', 'desktop', 'electron-main.cjs'), 'utf8');
   const preloadSrc = readFileSync(join(root, 'sidecars', 'pet', 'desktop', 'preload.cjs'), 'utf8');
+  const hostSrc = readFileSync(join(root, 'sidecars', 'pet', 'lib', 'desktop-host.mjs'), 'utf8');
+  const petSrc = readFileSync(join(root, 'sidecars', 'pet', 'renderer', 'pet.js'), 'utf8');
   assert.match(mainSrc, /lock-screen/);
   assert.match(mainSrc, /hagemi:cursor-tracking/);
   assert.match(mainSrc, /hagemi:idle-state/);
   assert.match(preloadSrc, /setCursorTracking:/);
   assert.match(preloadSrc, /getIdleState:/);
+  assert.match(hostSrc, /stdio:\s*\['ignore',\s*'pipe',\s*'ignore'\]/, 'suppresses where.exe stderr noise');
+  assert.match(petSrc, /case 'notify':/, 'supports Web Notification fallback in CDP mode');
 });
