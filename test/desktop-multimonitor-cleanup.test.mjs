@@ -8,15 +8,16 @@ import { cleanupDesktopRuntime } from '../tools/cleanup-desktop-runtime.mjs';
 
 test('desktop display and always-on-top level defaults and validation', () => {
   assert.equal(DEFAULTS.desktopDisplay, 'primary');
-  assert.equal(DEFAULTS.alwaysOnTopLevel, 'floating');
+  assert.equal(DEFAULTS.alwaysOnTopLevel, 'screen-saver');
 
   assert.equal(sanitize({ desktopDisplay: 'cursor' }).desktopDisplay, 'cursor');
   assert.equal(sanitize({ desktopDisplay: '2528732444' }).desktopDisplay, '2528732444');
   assert.equal(sanitize({ desktopDisplay: '../evil' }).desktopDisplay, 'primary');
 
+  assert.equal(sanitize({ alwaysOnTopLevel: 'floating' }).alwaysOnTopLevel, 'floating');
   assert.equal(sanitize({ alwaysOnTopLevel: 'normal' }).alwaysOnTopLevel, 'normal');
   assert.equal(sanitize({ alwaysOnTopLevel: 'screen-saver' }).alwaysOnTopLevel, 'screen-saver');
-  assert.equal(sanitize({ alwaysOnTopLevel: 'invalid' }).alwaysOnTopLevel, 'floating');
+  assert.equal(sanitize({ alwaysOnTopLevel: 'invalid' }).alwaysOnTopLevel, 'screen-saver');
 });
 
 test('electron-main and preload expose multi-monitor and configurable topmost level', () => {
@@ -26,7 +27,8 @@ test('electron-main and preload expose multi-monitor and configurable topmost le
   assert.match(mainSrc, /hagemi:displays/);
   assert.match(mainSrc, /hagemi:window-prefs/);
   assert.match(mainSrc, /getAllDisplays/);
-  assert.match(mainSrc, /let topLevelPref = 'floating'/);
+  assert.match(mainSrc, /let topLevelPref = 'screen-saver'/);
+  assert.match(mainSrc, /win\.on\('blur'/);
   assert.match(preloadSrc, /listDisplays:/);
   assert.match(preloadSrc, /setWindowPrefs:/);
 });

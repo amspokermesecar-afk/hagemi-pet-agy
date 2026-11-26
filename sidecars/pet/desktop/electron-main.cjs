@@ -42,7 +42,7 @@ const activeNotifications = new Set();
 const VALID_LEVELS = new Set(['floating', 'normal', 'screen-saver']);
 let win = null;
 let targetDisplayPref = 'primary';
-let topLevelPref = 'floating';
+let topLevelPref = 'screen-saver';
 
 function focusAntigravity(payload = {}) {
   const rawId = typeof payload?.conversationId === 'string' ? payload.conversationId : '';
@@ -75,11 +75,16 @@ function syncBounds() {
   win.setResizable(true);
   win.setBounds(area);
   win.setResizable(false);
+  applyTopLevel();
 }
 
-function applyTopLevel() {
+function applyTopLevel({ moveTop = false } = {}) {
   if (!win || win.isDestroyed()) return;
-  win.setAlwaysOnTop(true, topLevelPref);
+  const rel = topLevelPref === 'screen-saver' ? 1 : 0;
+  win.setAlwaysOnTop(true, topLevelPref, rel);
+  if (moveTop) {
+    try { win.moveTop(); } catch { /* Not supported on all platforms. */ }
+  }
 }
 
 function isParentAlive(pid) {
@@ -124,7 +129,16 @@ app.whenReady().then(() => {
   win.setIgnoreMouseEvents(true, { forward: true });
 
   win.once('ready-to-show', () => {
-    if (win && !win.isDestroyed()) win.showInactive();
+    if (win && !win.isDestroyed()) {
+      win.showInactive();
+      applyTopLevel({ moveTop: true });
+    }
+  });
+
+  // On Windows, clicking a transparent overlay and then returning focus to another Chromium window
+  // can drop the topmost Z-order; re-assert on blur so she never sinks behind Antigravity.
+  win.on('blur', () => {
+    applyTopLevel({ moveTop: true });
   });
 
   // Poll global OS cursor coordinates so gaze tracking stays responsive even over other windows.
@@ -145,6 +159,8 @@ app.whenReady().then(() => {
     } catch { /* Ignore transient display query errors. */ }
   }, 33);
   cursorTimer.unref?.();
+  powerMonitor.on('unlock-screen', () => applyTopLevel({ moveTop: true }));
+  powerMonitor.on('resume', () => applyTopLevel({ moveTop: true }));
   win.on('closed', () => clearInterval(cursorTimer));
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -166,6 +182,7 @@ app.whenReady().then(() => {
   ipcMain.on('hagemi:hit', (_event, interactive) => {
     if (win && !win.isDestroyed()) {
       win.setIgnoreMouseEvents(!interactive, { forward: true });
+      if (!interactive) applyTopLevel();
     }
   });
 

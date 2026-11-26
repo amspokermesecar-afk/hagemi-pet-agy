@@ -20,13 +20,28 @@ function resolveRuntimeDir() {
   return resolve(dataDir, '..', 'electron-runtime');
 }
 
+function downloadElectronBinary(runtimeDir, extraEnv = {}) {
+  const installer = join(runtimeDir, 'node_modules', 'electron', 'install.js');
+  if (!existsSync(installer)) return false;
+  const env = { ...process.env, ...extraEnv };
+  delete env.ELECTRON_SKIP_BINARY_DOWNLOAD;
+  const result = spawnSync(process.execPath, [installer], {
+    cwd: dirname(installer),
+    stdio: 'inherit',
+    env,
+  });
+  return result.status === 0;
+}
+
 function installElectron(runtimeDir, extraEnv = {}) {
   const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const env = { ...process.env, ...extraEnv };
+  delete env.ELECTRON_SKIP_BINARY_DOWNLOAD;
   const result = spawnSync(npmBin, ['install', '--no-audit', '--no-fund', 'electron'], {
     cwd: runtimeDir,
     stdio: 'inherit',
     shell: process.platform === 'win32',
-    env: { ...process.env, ...extraEnv },
+    env,
   });
   return result.status === 0;
 }
@@ -49,9 +64,13 @@ if (!existsSync(pkgPath)) {
 
 console.log(`Installing Electron desktop runtime into ${runtimeDir} ...`);
 let ok = installElectron(runtimeDir);
+if (!existsSync(binary)) {
+  ok = downloadElectronBinary(runtimeDir);
+}
 if (!ok || !existsSync(binary)) {
   console.log('Default Electron download failed; retrying with npmmirror (https://npmmirror.com/mirrors/electron/) ...');
-  ok = installElectron(runtimeDir, { ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/' });
+  const mirrorEnv = { ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/' };
+  ok = downloadElectronBinary(runtimeDir, mirrorEnv) || installElectron(runtimeDir, mirrorEnv);
 }
 
 if (!ok || !existsSync(binary)) {

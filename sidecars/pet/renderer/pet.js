@@ -48,7 +48,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
 
   let settings = {
     language: 'en', size: 'm', hidden: false, muted: false, animation: 'balanced',
-    followCursor: true, desktopDisplay: 'primary', alwaysOnTopLevel: 'floating',
+    followCursor: true, desktopDisplay: 'primary', alwaysOnTopLevel: 'screen-saver',
     roamEnabled: true, workStatusEnabled: true, quotaHoverDelayMs: 650,
     notifications: { enabled: true, onDone: true, onWaiting: true, whenFocused: true }, position: null,
   };
@@ -524,10 +524,10 @@ HAGEMI.boot = async function boot(send, options = {}) {
         ]),
       ];
       field(ui.desktopDisplay || 'Monitor (desktop overlay)', select(s.desktopDisplay || 'primary', displayChoices, value => patch({ desktopDisplay: value })));
-      field(ui.alwaysOnTopLevel || 'Always-on-top level', select(s.alwaysOnTopLevel || 'floating', [
-        ['floating', ui.level_floating || 'Floating (recommended)'],
+      field(ui.alwaysOnTopLevel || 'Always-on-top level', select(s.alwaysOnTopLevel || 'screen-saver', [
+        ['screen-saver', ui.level_screen_saver || 'Topmost (recommended on Windows)'],
+        ['floating', ui.level_floating || 'Floating'],
         ['normal', ui.level_normal || 'Normal'],
-        ['screen-saver', ui.level_screen_saver || 'Topmost (over fullscreen)'],
       ], value => patch({ alwaysOnTopLevel: value })));
     }
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
@@ -607,7 +607,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
     if (!options.desktop) return;
     window.__hagemiDesktop?.setWindowPrefs?.({
       display: settings.desktopDisplay || 'primary',
-      level: settings.alwaysOnTopLevel || 'floating',
+      level: settings.alwaysOnTopLevel || 'screen-saver',
     });
   }
   function refreshDisplays() {
