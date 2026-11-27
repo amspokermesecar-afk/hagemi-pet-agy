@@ -24,9 +24,9 @@ export function parseHostWindowState(raw) {
   return null;
 }
 
-function buildWin32WatcherScript(parentPid, intervalMs = 500) {
+function buildWin32WatcherScript(parentPid, intervalMs = 650) {
   const safePid = Math.max(0, Number(parentPid) || 0);
-  const safeInterval = Math.max(200, Math.min(5000, Math.round(Number(intervalMs) || 500)));
+  const safeInterval = Math.max(200, Math.min(5000, Math.round(Number(intervalMs) || 650)));
   return [
     "$ProgressPreference = 'SilentlyContinue'",
     "$ErrorActionPreference = 'SilentlyContinue'",
@@ -45,9 +45,21 @@ function buildWin32WatcherScript(parentPid, intervalMs = 500) {
     '  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);',
     '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);',
     '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);',
+    '  [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();',
+    '  [DllImport("kernel32.dll")] public static extern bool SetProcessWorkingSetSize(IntPtr proc, IntPtr min, IntPtr max);',
+    '  public static void Trim() {',
+    '    GC.Collect();',
+    '    GC.WaitForPendingFinalizers();',
+    '    GC.Collect();',
+    '    SetProcessWorkingSetSize(GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1));',
+    '  }',
+    '  public static bool ParentAlive(int pid) {',
+    '    if (pid <= 0) return true;',
+    '    try { using (var p = Process.GetProcessById(pid)) { return !p.HasExited; } } catch { return false; }',
+    '  }',
     '  public static string Poll() {',
     '    var pids = new HashSet<uint>();',
-    '    foreach (var p in Process.GetProcessesByName("Antigravity")) { try { pids.Add((uint)p.Id); } catch {} }',
+    '    foreach (var p in Process.GetProcessesByName("Antigravity")) { using (p) { try { pids.Add((uint)p.Id); } catch {} } }',
     '    if (pids.Count == 0) return "unknown";',
     '    int total = 0, open = 0;',
     '    EnumWindows((h, l) => {',
@@ -72,9 +84,10 @@ function buildWin32WatcherScript(parentPid, intervalMs = 500) {
     '  }',
     '}',
     '"@ | Out-Null',
+    '[HagemiHostWin]::Trim()',
     '$last = ""',
     'while ($true) {',
-    safePid > 0 ? `  if (-not (Get-Process -Id ${safePid} -ErrorAction SilentlyContinue)) { break }` : '',
+    safePid > 0 ? `  if (-not [HagemiHostWin]::ParentAlive(${safePid})) { break }` : '',
     '  $cur = [HagemiHostWin]::Poll()',
     '  if ($cur -ne $last) {',
     '    $last = $cur',
@@ -89,7 +102,7 @@ function buildWin32WatcherScript(parentPid, intervalMs = 500) {
 export class HostWindowWatcher {
   constructor({
     parentPid = process.pid,
-    intervalMs = 500,
+    intervalMs = 650,
     platform = process.platform,
     spawnFn = spawn,
     onStateChange = () => {},

@@ -101,8 +101,11 @@ export class Brain {
 
   // Why the model should not be used for this moment, or null to go ahead.
   aiBlocked(trigger, reaction, forced = false, allowAi = true) {
-    const { ai, chattiness } = this.getSettings();
+    const settings = this.getSettings();
+    const { ai, chattiness } = settings;
     if (!ai.enabled) return 'disabled';
+    if (!forced && settings.muted) return 'muted';
+    if (settings.hidden || (settings.hiddenUntil && this.now() < settings.hiddenUntil)) return 'hidden';
     if (allowAi === false || reaction.ai === false) return 'not-worth-it';
     if (!forced && !reaction.ai) return 'not-worth-it';
     if (!forced && reaction.salience < (CHATTINESS[chattiness] || CHATTINESS.normal).aiFloor) return 'not-salient';
@@ -192,6 +195,8 @@ export class Brain {
     const reaction = REACTIONS[trigger] || { salience: 0.5 };
     const settings = this.getSettings();
     const now = this.now();
+    if (settings.hidden || (settings.hiddenUntil && now < settings.hiddenUntil)) return null;
+    if (!force && settings.muted && trigger !== 'greet') return null;
     const talkMode = settings.chattiness in CHATTINESS ? CHATTINESS[settings.chattiness] : CHATTINESS.normal;
     const cooldown = (reaction.cooldownMin ?? 5) * MINUTE;
     if (!force) {

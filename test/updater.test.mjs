@@ -177,11 +177,19 @@ test('classifyUpdateRisk flags core runtime and permission files as high risk', 
   const high = classifyUpdateRisk([
     { filename: 'sidecars/pet/lib/lines.mjs' },
     { filename: 'sidecars/pet/lib/ls-client.mjs' },
+    { filename: 'sidecars/pet/lib/host-window.mjs' },
+    { filename: 'sidecars/pet/lib/cdp.mjs' },
     { filename: 'sidecars/pet/desktop/electron-main.cjs' },
     { filename: 'package.json' },
   ]);
   assert.equal(high.riskLevel, 'high');
-  assert.deepEqual(high.sensitiveFiles, ['sidecars/pet/lib/ls-client.mjs', 'sidecars/pet/desktop/electron-main.cjs', 'package.json']);
+  assert.deepEqual(high.sensitiveFiles, [
+    'sidecars/pet/lib/ls-client.mjs',
+    'sidecars/pet/lib/host-window.mjs',
+    'sidecars/pet/lib/cdp.mjs',
+    'sidecars/pet/desktop/electron-main.cjs',
+    'package.json',
+  ]);
 });
 
 test('parseRepoSlug validates owner/repo format and rejects unsafe inputs', () => {

@@ -279,3 +279,19 @@ test('sameFamilySnippetsOnly withholds chat excerpts across different model vend
   });
   assert.ok(modelCalls(optedOut.calls)[0].body.prompt.includes('OPT_OUT_USER_TEXT'));
 });
+
+test('muted or hidden pet never spends AI tokens on background moments, while double-click talk still works when muted', async () => {
+  const muted = harness({ settings: { muted: true } });
+  const bg = await muted.brain.consider('turn_done_big', context);
+  assert.equal(bg, null);
+  assert.equal(modelCalls(muted.calls).length, 0, 'muted pet must not call model on automatic events');
+
+  const talk = await muted.brain.consider('talk', context, { force: true, line: 'talk_offline' });
+  assert.equal(modelCalls(muted.calls).length, 1, 'explicit double-click talk still works when muted');
+  assert.equal(talk.ai, true);
+
+  const hidden = harness({ settings: { hiddenUntil: Date.parse('2026-11-03T13:00:00Z') } });
+  const duringHide = await hidden.brain.consider('turn_done_big', context);
+  assert.equal(duringHide, null);
+  assert.equal(modelCalls(hidden.calls).length, 0, 'hidden pet must not call model while hiddenUntil is active');
+});

@@ -33,7 +33,10 @@ test('DesktopBridge enforces loopback token auth and routes HTTP/art requests', 
 
   const html = await fetch(`${base}/?token=${info.token}`);
   assert.equal(html.status, 200);
-  assert.match(await html.text(), /Hagemi Pet/);
+  const htmlText = await html.text();
+  assert.match(htmlText, /Hagemi Pet/);
+  assert.match(htmlText, /hasOpenedOnce/, 're-sends ready when EventSource reconnects');
+  assert.match(htmlText, /es\.onerror/);
 
   const js = await fetch(`${base}/renderer.js?token=${info.token}`);
   assert.equal(js.status, 200);

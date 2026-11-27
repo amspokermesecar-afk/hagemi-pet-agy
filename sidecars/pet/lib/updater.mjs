@@ -18,7 +18,7 @@ const SENSITIVE_PATTERNS = [
   /^sidecars\/pet\/main\.mjs$/,
   /^sidecars\/pet\/sidecar\.json$/,
   /^sidecars\/pet\/desktop\//,
-  /^sidecars\/pet\/lib\/(?:ls-client|updater|desktop-host|desktop-bridge|host-focus)\.mjs$/,
+  /^sidecars\/pet\/lib\/(?:ls-client|updater|desktop-host|desktop-bridge|host-focus|host-window|cdp)\.mjs$/,
   /^tools\//,
   /^\.github\/workflows\//,
   /^(?:package|package-lock|plugin)\.json$/,

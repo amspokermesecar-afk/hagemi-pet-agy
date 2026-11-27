@@ -44,6 +44,10 @@ let win = null;
 let targetDisplayPref = 'primary';
 let topLevelPref = 'screen-saver';
 let hostMinimized = false;
+let currentDisplayId = null;
+let pendingDisplayId = null;
+let pendingDisplaySince = 0;
+let overlayBusy = false;
 
 function focusAntigravity(payload = {}) {
   const rawId = typeof payload?.conversationId === 'string' ? payload.conversationId : '';
@@ -70,7 +74,11 @@ function resolveTargetDisplay() {
 
 function syncBounds() {
   if (!win || win.isDestroyed() || hostMinimized) return;
-  const area = resolveTargetDisplay().workArea;
+  const target = resolveTargetDisplay();
+  currentDisplayId = target.id;
+  pendingDisplayId = null;
+  pendingDisplaySince = 0;
+  const area = target.workArea;
   const cur = win.getBounds();
   if (cur.x === area.x && cur.y === area.y && cur.width === area.width && cur.height === area.height) return;
   win.setResizable(true);
@@ -175,6 +183,20 @@ app.whenReady().then(() => {
       const now = Date.now();
       try {
         const pt = screen.getCursorScreenPoint();
+        if (targetDisplayPref === 'cursor' && !overlayBusy) {
+          const nearest = screen.getDisplayNearestPoint(pt);
+          if (nearest && nearest.id !== currentDisplayId) {
+            if (pendingDisplayId !== nearest.id) {
+              pendingDisplayId = nearest.id;
+              pendingDisplaySince = now;
+            } else if (now - pendingDisplaySince >= 250) {
+              syncBounds();
+            }
+          } else {
+            pendingDisplayId = null;
+            pendingDisplaySince = 0;
+          }
+        }
         const bounds = win.getBounds();
         const cx = Math.round(pt.x - bounds.x);
         const cy = Math.round(pt.y - bounds.y);
@@ -231,6 +253,7 @@ app.whenReady().then(() => {
   ipcMain.on('hagemi:cursor-tracking', (_event, payload = {}) => {
     if (typeof payload.followCursor === 'boolean') cursorFollow = payload.followCursor;
     if (typeof payload.hidden === 'boolean') petHidden = payload.hidden;
+    if (typeof payload.busy === 'boolean') overlayBusy = payload.busy;
     if (!petHidden && !hostMinimized && !systemLocked) lastCursorMoveAt = Date.now();
     scheduleCursorPoll(petHidden || hostMinimized || systemLocked ? null : 50);
   });
@@ -273,8 +296,8 @@ app.whenReady().then(() => {
       : null;
     if (nextDisplay && nextDisplay !== targetDisplayPref) {
       targetDisplayPref = nextDisplay;
-      if (!hostMinimized) syncBounds();
-    } else if (targetDisplayPref === 'cursor' && !hostMinimized) {
+      if (!hostMinimized && !(targetDisplayPref === 'cursor' && overlayBusy)) syncBounds();
+    } else if (targetDisplayPref === 'cursor' && !hostMinimized && !overlayBusy) {
       syncBounds();
     }
     if (VALID_LEVELS.has(payload.level) && payload.level !== topLevelPref) {

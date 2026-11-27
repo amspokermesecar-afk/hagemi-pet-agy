@@ -125,6 +125,7 @@ html, body {
   const pending = [];
   const outbox = [];
   let esOpen = false;
+  let hasOpenedOnce = false;
 
   const postMsg = raw => fetch('/msg?token=' + encodeURIComponent(TOKEN) + '&client=' + encodeURIComponent(CLIENT_ID), {
     method: 'POST',
@@ -161,7 +162,15 @@ html, body {
   const es = new EventSource('/events?token=' + encodeURIComponent(TOKEN) + '&client=' + encodeURIComponent(CLIENT_ID));
   es.onopen = () => {
     esOpen = true;
+    const reconnect = hasOpenedOnce;
+    hasOpenedOnce = true;
+    if (reconnect && !outbox.some(raw => raw.includes('"type":"ready"'))) {
+      postMsg(JSON.stringify({ type: 'ready' }));
+    }
     while (outbox.length) postMsg(outbox.shift());
+  };
+  es.onerror = () => {
+    esOpen = false;
   };
   es.onmessage = event => {
     let msg;

@@ -84,11 +84,16 @@ test('hideWhenHostMinimized setting defaults to true and desktop IPC is wired', 
   const preloadSrc = readFileSync(join(root, 'sidecars', 'pet', 'desktop', 'preload.cjs'), 'utf8');
   const bridgeSrc = readFileSync(join(root, 'sidecars', 'pet', 'lib', 'desktop-bridge.mjs'), 'utf8');
   const petSrc = readFileSync(join(root, 'sidecars', 'pet', 'renderer', 'pet.js'), 'utf8');
+  const watcherSrc = readFileSync(join(root, 'sidecars', 'pet', 'lib', 'host-window.mjs'), 'utf8');
   assert.match(mainSrc, /hagemi:host-minimized/);
   assert.match(mainSrc, /win\.setAlwaysOnTop\(false\);\s*win\.hide\(\)/);
   assert.match(mainSrc, /function applyTopLevel[\s\S]{0,160}hostMinimized \|\| !win\.isVisible\(\)/);
   assert.match(mainSrc, /win\.on\('blur', \(\) => \{\s*if \(hostMinimized/);
+  assert.match(mainSrc, /pendingDisplaySince/, 'debounces multi-monitor cursor display switches');
   assert.match(preloadSrc, /setHostMinimized:/);
   assert.match(bridgeSrc, /host_minimized/);
-  assert.match(petSrc, /const hidden = hostMinimized \|\| settings\.hidden/);
+  assert.match(petSrc, /const hidden = hostMinimized \|\| isPetHidden\(\)/);
+  assert.match(watcherSrc, /SetProcessWorkingSetSize/, 'trims PowerShell working set after C# compilation');
+  assert.match(watcherSrc, /using \(p\)/, 'disposes Process handles each poll');
+  assert.match(watcherSrc, /ParentAlive/);
 });

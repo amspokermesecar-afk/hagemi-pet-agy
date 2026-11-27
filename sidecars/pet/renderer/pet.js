@@ -303,6 +303,7 @@ HAGEMI.boot = async function boot(send, options = {}) {
       lastInteractive = interactive;
       window.__hagemiDesktop?.setInteractive(interactive);
     }
+    syncCursorTracking(hostMinimized || isPetHidden());
   }
 
   function placeWorkPill() {
@@ -552,10 +553,15 @@ HAGEMI.boot = async function boot(send, options = {}) {
     field(ui.language || 'Language', select(s.language, [['auto', ui.language_auto], ['en', ui.language_en], ['zhs', ui.language_zhs]], value => patch({ language: value })));
     field(ui.size || 'Size', select(s.size, [['xs', ui.size_xs], ['s', ui.size_s], ['m', ui.size_m], ['l', ui.size_l], ['xl', ui.size_xl]], value => patch({ size: value })));
     field(ui.animation || 'Animation', select(s.animation, [['smooth', ui.animation_smooth], ['balanced', ui.animation_balanced], ['saver', ui.animation_saver]], value => patch({ animation: value })));
-    field(ui.renderMode || 'Display mode', select(s.renderMode || 'auto', [['auto', ui.renderMode_auto || 'Auto'], ['desktop', ui.renderMode_desktop || 'Desktop overlay only'], ['cdp', ui.renderMode_cdp || 'App window only (CDP)']], value => patch({ renderMode: value })));
-    if ((s.renderMode || 'auto') === 'cdp') {
-      make('div', 'panel-note', panel).textContent = ui.renderMode_cdp_hint || 'Tip: if Antigravity disables CDP later, switch back to Auto.';
-    }
+    const cdpHint = document.createElement('div');
+    cdpHint.className = 'panel-note';
+    cdpHint.textContent = ui.renderMode_cdp_hint || 'Tip: if Antigravity disables CDP later, switch back to Auto.';
+    cdpHint.style.display = (s.renderMode || 'auto') === 'cdp' ? '' : 'none';
+    field(ui.renderMode || 'Display mode', select(s.renderMode || 'auto', [['auto', ui.renderMode_auto || 'Auto'], ['desktop', ui.renderMode_desktop || 'Desktop overlay only'], ['cdp', ui.renderMode_cdp || 'App window only (CDP)']], value => {
+      cdpHint.style.display = value === 'cdp' ? '' : 'none';
+      patch({ renderMode: value });
+    }));
+    panel.appendChild(cdpHint);
     field(ui.chattiness || 'Chattiness', select(s.chattiness, [['quiet', ui.chattiness_quiet], ['normal', ui.chattiness_normal], ['chatty', ui.chattiness_chatty]], value => patch({ chattiness: value })));
     field(ui.followCursor || 'Watch the cursor', check(s.followCursor, value => patch({ followCursor: value })));
     field(ui.roam_enabled || 'Allow roaming', check(s.roamEnabled !== false, value => patch({ roamEnabled: value })));
@@ -652,21 +658,27 @@ HAGEMI.boot = async function boot(send, options = {}) {
     syncWorkPill();
     send({ type: 'settings', patch: change });
   }
+  const isPetHidden = () => Boolean(settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil));
   let lastCursorTrackKey = '';
+  let lastWindowPrefsKey = '';
+  let lastReportedHidden = null;
   function syncCursorTracking(hidden) {
     if (!options.desktop) return;
     const followCursor = settings.followCursor !== false;
-    const key = `${followCursor ? 1 : 0}:${hidden ? 1 : 0}`;
+    const busy = Boolean(dragging || menu.classList.contains('show') || panel.classList.contains('show'));
+    const key = `${followCursor ? 1 : 0}:${hidden ? 1 : 0}:${busy ? 1 : 0}`;
     if (key === lastCursorTrackKey) return;
     lastCursorTrackKey = key;
-    window.__hagemiDesktop?.setCursorTracking?.({ followCursor, hidden: !!hidden });
+    window.__hagemiDesktop?.setCursorTracking?.({ followCursor, hidden: !!hidden, busy });
   }
   function syncDesktopWindowPrefs() {
     if (!options.desktop) return;
-    window.__hagemiDesktop?.setWindowPrefs?.({
-      display: settings.desktopDisplay || 'primary',
-      level: settings.alwaysOnTopLevel || 'screen-saver',
-    });
+    const display = settings.desktopDisplay || 'primary';
+    const level = settings.alwaysOnTopLevel || 'screen-saver';
+    const key = `${display}:${level}`;
+    if (key === lastWindowPrefsKey) return;
+    lastWindowPrefsKey = key;
+    window.__hagemiDesktop?.setWindowPrefs?.({ display, level });
   }
   function refreshDisplays() {
     if (!options.desktop || !window.__hagemiDesktop?.listDisplays) return;
@@ -677,11 +689,13 @@ HAGEMI.boot = async function boot(send, options = {}) {
   refreshDisplays();
   function applyVisibility() {
     if (!hostMinimized) syncDesktopWindowPrefs();
-    const hidden = hostMinimized || settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
+    const hidden = hostMinimized || isPetHidden();
     stage.style.display = hidden ? 'none' : 'block';
     syncCursorTracking(hidden);
     if (hidden) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); syncWorkPill(); syncDesktopHit(false, false, false, false); }
     else { syncWorkPill(); syncDesktopHit(); }
+    if (lastReportedHidden !== null && lastReportedHidden !== hidden) presence();
+    lastReportedHidden = hidden;
   }
 
   // ---- Touch: pokes, pats, shakes, a short temper -----------------------------------------
@@ -870,8 +884,9 @@ HAGEMI.boot = async function boot(send, options = {}) {
   const presence = () => {
     const localIdleMs = Math.round(performance.now() - Math.max(lastPointerAt, lastKeyAt));
     const idleMs = options.desktop ? Math.min(localIdleMs, Math.round(desktopIdleSec * 1000)) : localIdleMs;
-    const focused = options.desktop ? (!document.hidden && !desktopLocked && !hostMinimized && desktopIdleSec < 300) : document.hasFocus();
-    send({ type: 'presence', desktop: Boolean(options.desktop), visible: !document.hidden && !desktopLocked && !hostMinimized, focused, locked: desktopLocked, idleMs, language: navigator.language });
+    const visible = !document.hidden && !desktopLocked && !hostMinimized && !isPetHidden();
+    const focused = options.desktop ? (visible && desktopIdleSec < 300) : (visible && document.hasFocus());
+    send({ type: 'presence', desktop: Boolean(options.desktop), visible, focused, locked: desktopLocked, idleMs, language: navigator.language });
   };
   listen(document, 'visibilitychange', presence);
   listen(window, 'focus', presence);

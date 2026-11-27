@@ -145,7 +145,7 @@ const brain = new Brain({
   // Comments are paid for by their own model, not by the one selected for the agent.
   getQuotaLevel: () => levelForModel(allBuckets, models.resolve(settings.value.ai.model)?.label || settings.value.ai.model),
   say: (result, trigger) => {
-    broadcastAll({ t: 'say', text: result.text, mood: result.mood, ai: result.ai, force: trigger === 'greet' });
+    broadcastAll({ t: 'say', text: result.text, mood: result.mood, ai: result.ai, force: trigger === 'greet' || trigger === 'talk' });
     if (process.env.HAGEMI_DEBUG) log(`${trigger}${result.ai ? ' (ai)' : ''}: ${result.text}`);
   },
 });
@@ -420,6 +420,7 @@ function schedulePostTurnQuotaRefresh() {
 
 // Which model the user has picked: she has opinions about the competition.
 async function pollModel() {
+  if (selectedModel && (presence.locked || (!presence.visible && facts.running === 0))) return;
   try {
     const state = await readFile(join(appDataDir, 'antigravity_state.pbtxt'), 'utf8');
     const id = state.match(/last_selected_agent_model:\s*(\S+)/)?.[1];
@@ -589,7 +590,10 @@ function syncDesktopFallback() {
       const { url } = await desktopBridge.start();
       const started = desktopHost.start(url);
       if (started) log('desktop overlay started');
-      else desktopNextTryAt = Date.now() + 60000;
+      else {
+        await desktopBridge.stop();
+        desktopNextTryAt = Date.now() + 60000;
+      }
     }
     syncHostWindowWatcher();
   }).catch(error => log(`desktop overlay: ${error.message}`));
