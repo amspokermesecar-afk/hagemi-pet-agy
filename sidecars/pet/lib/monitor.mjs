@@ -288,11 +288,11 @@ export class Monitor {
       if (this.stopped) return;
       const presence = this.getPresence?.() || {};
       const activityIdleMs = Math.max(0, this.now() - this.lastActivityAt);
-      const userIdleMs = Number.isFinite(presence.idleMs) ? Math.max(0, presence.idleMs) : 0;
-      const effectiveIdleMs = running ? 0 : Math.min(activityIdleMs, userIdleMs || activityIdleMs);
+      const userIdleMs = Number.isFinite(presence.idleMs) ? Math.max(0, presence.idleMs) : null;
+      const effectiveIdleMs = running ? 0 : (userIdleMs === null ? activityIdleMs : Math.min(activityIdleMs, userIdleMs));
       const delay = nextMonitorDelayMs({
         running,
-        idleMs: presence.locked ? Math.max(effectiveIdleMs, userIdleMs) : effectiveIdleMs,
+        idleMs: presence.locked ? Math.max(effectiveIdleMs, userIdleMs ?? 0) : effectiveIdleMs,
         locked: !!presence.locked,
         intervalRunning,
         intervalIdle,

@@ -149,3 +149,40 @@ test('waiting on the user shows up in the facts', async () => {
   await monitor.poll();
   assert.equal(monitor.facts().waiting, true);
 });
+
+test('monitor stays responsive when user presence.idleMs is 0 even after long agent quiet time', async () => {
+  let now = 10_000_000;
+  let presence = { idleMs: 0, locked: false };
+  const delays = [];
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    delays.push(ms);
+    return { unref() {} };
+  };
+  try {
+    const monitor = new Monitor({
+      ls: { call: async () => ({ trajectorySummaries: { a: summary('IDLE') } }) },
+      brainDir: tmpdir(),
+      onEvent() {},
+      getPresence: () => presence,
+      now: () => now,
+      tailFactory: () => ({ read: async () => [] }),
+    });
+    // Simulate 10 minutes since last agent activity while the user is actively moving mouse/typing (idleMs === 0).
+    monitor.lastActivityAt = now - 10 * 60000;
+    monitor.start(2000, 4000);
+    await new Promise(resolve => origSetTimeout(resolve, 10));
+    monitor.stop();
+    assert.equal(delays[0], 4000, 'active user (idleMs === 0) must not fall back to 15s/30s idle backoff');
+
+    // When both agent and user are idle for 6 minutes, it backs off to 30s.
+    delays.length = 0;
+    presence = { idleMs: 6 * 60000, locked: false };
+    monitor.start(2000, 4000);
+    await new Promise(resolve => origSetTimeout(resolve, 10));
+    monitor.stop();
+    assert.equal(delays[0], 30000, 'idle user + idle agent backs off to deep-idle interval');
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+  }
+});
