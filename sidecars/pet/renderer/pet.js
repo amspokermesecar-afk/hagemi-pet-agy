@@ -676,8 +676,8 @@ HAGEMI.boot = async function boot(send, options = {}) {
   }
   refreshDisplays();
   function applyVisibility() {
-    syncDesktopWindowPrefs();
-    const hidden = settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
+    if (!hostMinimized) syncDesktopWindowPrefs();
+    const hidden = hostMinimized || settings.hidden || (settings.hiddenUntil && Date.now() < settings.hiddenUntil);
     stage.style.display = hidden ? 'none' : 'block';
     syncCursorTracking(hidden);
     if (hidden) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); syncWorkPill(); syncDesktopHit(false, false, false, false); }
@@ -1198,7 +1198,8 @@ HAGEMI.boot = async function boot(send, options = {}) {
       }
       case 'host_minimized':
         hostMinimized = !!message.minimized;
-        if (hostMinimized) { stopRoam(false); closeBubble(); hideHud(); closeMenu(); closePanel(); }
+        if (hostMinimized && dragging) { dragging = null; animator.clearOverride('dragged'); }
+        applyVisibility();
         presence();
         break;
       case 'heartbeat':

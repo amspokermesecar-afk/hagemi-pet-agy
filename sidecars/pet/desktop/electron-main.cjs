@@ -43,6 +43,7 @@ const VALID_LEVELS = new Set(['floating', 'normal', 'screen-saver']);
 let win = null;
 let targetDisplayPref = 'primary';
 let topLevelPref = 'screen-saver';
+let hostMinimized = false;
 
 function focusAntigravity(payload = {}) {
   const rawId = typeof payload?.conversationId === 'string' ? payload.conversationId : '';
@@ -68,18 +69,18 @@ function resolveTargetDisplay() {
 }
 
 function syncBounds() {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || hostMinimized) return;
   const area = resolveTargetDisplay().workArea;
   const cur = win.getBounds();
   if (cur.x === area.x && cur.y === area.y && cur.width === area.width && cur.height === area.height) return;
   win.setResizable(true);
   win.setBounds(area);
   win.setResizable(false);
-  applyTopLevel();
+  if (win.isVisible()) applyTopLevel();
 }
 
 function applyTopLevel({ moveTop = false } = {}) {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || hostMinimized || !win.isVisible()) return;
   const rel = topLevelPref === 'screen-saver' ? 1 : 0;
   win.setAlwaysOnTop(true, topLevelPref, rel);
   if (moveTop) {
@@ -125,11 +126,11 @@ app.whenReady().then(() => {
     },
   });
 
-  applyTopLevel();
   win.setIgnoreMouseEvents(true, { forward: true });
 
   win.once('ready-to-show', () => {
     if (win && !win.isDestroyed() && !hostMinimized) {
+      syncBounds();
       win.showInactive();
       applyTopLevel({ moveTop: true });
     }
@@ -137,7 +138,10 @@ app.whenReady().then(() => {
 
   // On Windows, clicking a transparent overlay and then returning focus to another Chromium window
   // can drop the topmost Z-order; re-assert on blur so she never sinks behind Antigravity.
+  // Guard on !hostMinimized && win.isVisible() because win.hide() fires blur on a focused overlay
+  // and win.moveTop() on Windows re-shows a hidden BrowserWindow!
   win.on('blur', () => {
+    if (hostMinimized || !win || win.isDestroyed() || !win.isVisible()) return;
     applyTopLevel({ moveTop: true });
   });
 
@@ -147,7 +151,6 @@ app.whenReady().then(() => {
   let lastCursorMoveAt = Date.now();
   let cursorFollow = true;
   let petHidden = false;
-  let hostMinimized = false;
   let systemLocked = false;
   let cursorTimer = null;
 
@@ -211,10 +214,13 @@ app.whenReady().then(() => {
   screen.on('display-removed', syncBounds);
 
   ipcMain.on('hagemi:hit', (_event, interactive) => {
-    if (win && !win.isDestroyed()) {
-      win.setIgnoreMouseEvents(!interactive, { forward: true });
-      if (!interactive) applyTopLevel();
+    if (!win || win.isDestroyed()) return;
+    if (hostMinimized) {
+      win.setIgnoreMouseEvents(true, { forward: true });
+      return;
     }
+    win.setIgnoreMouseEvents(!interactive, { forward: true });
+    if (!interactive) applyTopLevel();
   });
 
   ipcMain.handle('hagemi:idle', () => powerMonitor.getSystemIdleTime());
@@ -231,13 +237,18 @@ app.whenReady().then(() => {
 
   ipcMain.on('hagemi:host-minimized', (_event, minimized) => {
     const next = Boolean(minimized);
-    if (next === hostMinimized) return;
+    const changed = next !== hostMinimized;
     hostMinimized = next;
     if (!win || win.isDestroyed()) return;
     if (hostMinimized) {
+      if (!changed && !win.isVisible()) return;
       scheduleCursorPoll();
+      win.setIgnoreMouseEvents(true, { forward: true });
+      win.setAlwaysOnTop(false);
       win.hide();
     } else {
+      if (!changed && win.isVisible()) return;
+      syncBounds();
       win.showInactive();
       applyTopLevel({ moveTop: true });
       lastCursorMoveAt = Date.now();
@@ -262,13 +273,13 @@ app.whenReady().then(() => {
       : null;
     if (nextDisplay && nextDisplay !== targetDisplayPref) {
       targetDisplayPref = nextDisplay;
-      syncBounds();
-    } else if (targetDisplayPref === 'cursor') {
+      if (!hostMinimized) syncBounds();
+    } else if (targetDisplayPref === 'cursor' && !hostMinimized) {
       syncBounds();
     }
     if (VALID_LEVELS.has(payload.level) && payload.level !== topLevelPref) {
       topLevelPref = payload.level;
-      applyTopLevel();
+      if (!hostMinimized) applyTopLevel();
     }
   });
 
